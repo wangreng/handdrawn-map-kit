@@ -41,6 +41,16 @@ test('neighbours are found from a bounding box', () => {
   assert.deepEqual(ids, ['CHN', 'JPN', 'KOR', 'PRK']);
 });
 
+test('neighbours are found across the antimeridian', () => {
+  // Fiji-centred frame: 170E .. 170W, written as 170 .. 190
+  const ids = countriesInBBox([170, -25, 190, -10]).map((c) => c.id);
+  assert.ok(ids.includes('FJI') && ids.includes('TON') && ids.includes('WSM'), ids.join(','));
+  const map = createMap({ w: 150, h: 100, ppm: 2, seed: 't' });
+  const proj = map.createProjection({ lon0: 180, lat0: -17, cx: 75, cy: 50, scale: 0.06, rotDeg: 0 });
+  const drawn = map.countries(proj, { focus: 'FJI' }).neighbors.map((n) => n.country.id);
+  assert.ok(drawn.includes('TON'), drawn.join(','));
+});
+
 test('a Natural Earth GeoJSON object can be used as the source', () => {
   const geojson = {
     type: 'FeatureCollection',

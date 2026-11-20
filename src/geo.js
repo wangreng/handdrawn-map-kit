@@ -154,11 +154,13 @@ function listCountries(source) {
 
 const bboxIntersects = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 
-// All countries with at least one polygon whose bounding box touches [west, south, east, north]
+// All countries with at least one polygon whose bounding box touches [west, south, east, north].
+// The box may run past +/-180 (a frame spanning the antimeridian); countries are matched a turn either side.
 function countriesInBBox(bbox, source) {
-  return loadCountries(source).countries.filter(
-    (c) => bboxIntersects(c.bbox, bbox) && c.polygons.some((poly) => bboxIntersects(bboxOf([poly]), bbox)),
-  );
+  const [w, s, e, n] = bbox;
+  const boxes = [-360, 0, 360].map((d) => [w + d, s, e + d, n]);
+  const hit = (b) => boxes.some((box) => bboxIntersects(b, box));
+  return loadCountries(source).countries.filter((c) => hit(c.bbox) && c.polygons.some((poly) => hit(bboxOf([poly]))));
 }
 
 module.exports = {
