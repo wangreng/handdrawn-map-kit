@@ -75,17 +75,28 @@ function createProjection(o = {}) {
   const scale = o.scale ?? 0.140;
   const a = ((o.rotDeg ?? 26) * Math.PI) / 180;
 
-  const fn = (lon, lat) => {
-    let dLon = lon - lon0;
-    if (dLon > 180) dLon -= 360;
-    else if (dLon < -180) dLon += 360;
+  const wrap = (dLon) => (dLon > 180 ? dLon - 360 : dLon < -180 ? dLon + 360 : dLon);
+  const project = (dLon, lat) => {
     const xk = dLon * KM_PER_DEG_LON * Math.cos((lat * Math.PI) / 180);
     const yk = -(lat - lat0) * KM_PER_DEG_LAT;
     const xr = xk * Math.cos(a) - yk * Math.sin(a);
     const yr = xk * Math.sin(a) + yk * Math.cos(a);
     return [cx + xr * scale, cy + yr * scale];
   };
+  const fn = (lon, lat) => project(wrap(lon - lon0), lat);
   fn.pts = (arr) => arr.map(([lon, lat]) => fn(lon, lat));
+  // Project a closed ring as one piece: every vertex gets the same 360° shift, so a ring lying across
+  // the far side of the globe from lon0 stays whole (and off the sheet) instead of being torn in two
+  fn.ring = (arr) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const [lon] of arr) {
+      if (lon < lo) lo = lon;
+      if (lon > hi) hi = lon;
+    }
+    const mid = (lo + hi) / 2 - lon0;
+    const shift = wrap(((mid % 360) + 540) % 360 - 180) - mid;
+    return arr.map(([lon, lat]) => project(lon - lon0 + shift, lat));
+  };
   // [x, y] mm -> [lon, lat]
   fn.inverse = (x, y) => {
     const xr = (x - cx) / scale, yr = (y - cy) / scale;
@@ -291,7 +302,7 @@ function geoRings(P, proj, polygons, o = {}) {
   const out = [];
   for (const poly of polygons) {
     for (let k = 0; k < poly.length; k++) {
-      let ring = clipRing(proj.pts(poly[k]), x0, y0, x1, y1);
+      let ring = clipRing(proj.ring ? proj.ring(poly[k]) : proj.pts(poly[k]), x0, y0, x1, y1);
       if (ring.length < 3 || ringAreaMm(ring) < minArea) {
         if (k === 0) break; // no outer ring left, so its holes go too
         continue;
@@ -324,7 +335,12 @@ const degLabel = (v, pos, neg) => {
 function drawGraticule(P, proj, o = {}) {
   const inner = o.inner ?? 8.4;
   const x0 = inner, y0 = inner, x1 = P.w - inner, y1 = P.h - inner;
-  const [west, south, east, north] = proj.extent([x0, y0, x1, y1]);
+  let [west, south, east, north] = proj.extent([x0, y0, x1, y1]);
+  // Near the poles the sheet can show more than a full turn of longitude; draw each meridian once
+  if (proj.params) {
+    west = Math.max(west, proj.params.lon0 - 180);
+    east = Math.min(east, proj.params.lon0 + 180);
+  }
   const step = o.step ?? Math.max(niceStep(east - west), niceStep(north - south));
   const lons = o.lons || niceSteps(west, east, step);
   const lats = o.lats || niceSteps(Math.max(-85, south), Math.min(85, north), step);
@@ -336,7 +352,7 @@ function drawGraticule(P, proj, o = {}) {
     for (let i = 0; i <= N; i++) raw.push(proj(lon, Math.max(-89, Math.min(89, south + ((north - south) * i) / N))));
     for (const run of clipRuns(raw, x0, y0, x1, y1)) {
       P.ink(run, { nib: 0.1, color: PALETTE.graticule, tremor: 0.25 });
-      const text = degLabel(lon > 180 ? lon - 360 : lon, 'E', 'W');
+      const text = degLabel(((((lon + 180) % 360) + 360) % 360) - 180, 'E', 'W'); // back into [-180, 180)
       for (const end of [run[0], run[run.length - 1]]) {
         if (Math.abs(end[1] - y1) < 0.5) ticks.push({ x: end[0], y: y1 - 1.2, text, side: 'bottom' });
         if (Math.abs(end[1] - y0) < 0.5) ticks.push({ x: end[0], y: y0 + 2.8, text, side: 'top' });

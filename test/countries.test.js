@@ -93,6 +93,16 @@ test('graticule values and hemisphere labels follow the projection', () => {
   assert.deepEqual([...new Set(custom)].sort(), ['127°E', '36°N']);
 });
 
+test('countries on the far side of the globe do not leak onto the sheet', () => {
+  const map = createMap({ w: 150, h: 100, ppm: 2, seed: 't' });
+  const proj = map.fitProjection('CAN');
+  // Kazakhstan straddles the meridian opposite Canada's centre; its ring must stay in one piece
+  assert.deepEqual(map.countryRings(proj, 'KAZ'), []);
+  assert.ok(map.countryRings(proj, 'USA').length > 0);
+  const labels = map.graticule(proj).map((t) => t.text);
+  assert.ok(labels.every((t) => parseFloat(t) <= 180), labels.join(' '));
+});
+
 test('flags resolve by code or country name and reject unknown ones', () => {
   assert.equal(resolveFlag('japan'), FLAGS.JPN);
   assert.equal(resolveFlag('KR'), FLAGS.KOR);
