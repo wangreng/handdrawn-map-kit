@@ -1,15 +1,35 @@
 {
   "name": "handdrawn-map-kit",
   "version": "1.0.0",
-  "private": true,
   "license": "MIT",
   "description": "Standalone hand-drawn illustrated cultural map toolkit (inspired by Aleksandra & Daniel Mizielinski's Maps), extracted from statechart-art's dry-media engine.",
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./elements": "./src/elements.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "engine/",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "demo": "node examples/japan_cultural_map.js --fast",
-    "demo:hd": "node examples/japan_cultural_map.js"
+    "demo:hd": "node examples/japan_cultural_map.js",
+    "lint": "eslint .",
+    "test": "node --test"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.0.13"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "eslint": "9.39.4",
+    "globals": "16.5.0"
   }
 }

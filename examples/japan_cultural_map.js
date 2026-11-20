@@ -9,6 +9,7 @@ async function main() {
     id: 'japan-cartographic-atlas',
     w: 300,
     h: 200,
+    ppm: process.argv.includes('--fast') ? 5 : 10,
     seed: 'atlas-japan-map-v3',
     paper: 'hotpress',
     ocean: '#cde0e6',
@@ -113,14 +114,13 @@ async function main() {
     [133.6, 35.1, 5.2, 5.5, false],
     [132.5, 34.8, 5.0, 5.2, false],
     [133.9, 33.8, 5.4, 5.8, false],
-    [133.2, 33.6, 5.0, 5.4, false],
     [131.1, 32.88, 6.0, 6.8, false], // Mt. Aso!
     [130.9, 32.2, 5.0, 5.4, false],
   ]));
 
   // Smoke puff over Mt. Aso volcano in Kyushu!
   const [asoX, asoY] = proj(131.1, 32.88);
-  map.P.curve([[asoX, asoY - 7.0], [asoX + 1.2, asoY - 9.5], [asoX - 0.6, asoY - 12.0]], { nib: 0.14, color: '#6e655f' });
+  map.P.curve([[asoX, asoY - 7.0], [asoX + 1.2, asoY - 9.5], [asoX - 0.6, asoY - 10.5]], { nib: 0.14, color: '#6e655f' });
 
   // Terraced Rice Fields & Forests in real agricultural basins
   map.riceFields(...proj(140.1, 39.2), 11, 4.8); // Akita / Shonai plain
@@ -152,8 +152,8 @@ async function main() {
   map.seaLabel('PACIFIC OCEAN', 246, 129, { size: 3.5 });
   map.seaLabel('KOREA STRAIT', 52, 106, { size: 2.1, spacing: 0.10 });
   map.seaLabel('EAST CHINA SEA', 25, 178, { size: 2.3, spacing: 0.10 });
-  map.regionLabel('HOKKAIDO', ...proj(142.8, 43.15), { size: 2.4 });
-  map.regionLabel('HONSHU', ...proj(138.3, 36.5), { size: 2.4 });
+  map.regionLabel('HOKKAIDO', 246.3, 65.4, { size: 2.4 });
+  map.regionLabel('HONSHU', 159.3, 127.5, { size: 2.4 });
 
   for (const [wx, wy, s] of [[104, 54, 0.72], [156, 66, 0.72], [86, 98, 0.68], [242, 86, 0.75], [164, 182, 0.72], [78, 178, 0.70]]) {
     map.waves(wx, wy, s, 2);
@@ -185,17 +185,18 @@ async function main() {
   // Kushiro Red-crowned Crane in eastern Hokkaido
   const [kusX, kusY] = proj(144.38, 42.98);
   map.el.crane(kusX + 2, kusY - 3, 0.62);
-  map.city(kusX, kusY, 'Kushiro', { dy: 3.0, size: 2.0 });
+  map.city(kusX, kusY, 'Kushiro', { dy: 4.3, size: 2.0 });
   map.label('Red-crowned Crane', kusX + 12, kusY + 7.5, { face: 'sans', size: 1.9 });
 
   // --- TOHOKU (Northeast Honshu) ---
-  map.city(...proj(140.74, 40.82), 'Aomori', { dx: -6.5, dy: -1.2, size: 2.1 });
+  map.city(...proj(140.74, 40.82), 'Aomori', { dx: 1.5, dy: 0.8, size: 1.9, align: 'left' });
   map.city(...proj(140.87, 38.27), 'Sendai', { dx: 6.5, dy: 1.0, size: 2.2 });
 
   // Hot Spring Onsen in Tohoku mountains
   const [onsX, onsY] = proj(140.6, 39.2);
-  map.el.onsen(onsX + 5, onsY + 2, 0.58);
-  map.label('Onsen', onsX + 5, onsY + 5.5, { face: 'sans', size: 1.9 });
+  map.el.onsen(222, 111, 0.58);
+  map.label('Onsen', 222, 114.6, { face: 'sans', size: 1.9 });
+  map.callout([216.5, 109.5], [onsX + 4, onsY + 1.5], { bendY: -1.5 });
 
   // Koinobori streamers off Sanriku coast
   map.el.koinobori(228, 96, 0.78);
@@ -203,7 +204,7 @@ async function main() {
 
   // --- SEA OF JAPAN & HOKURIKU ---
   const [niiX, niiY] = proj(139.04, 37.92);
-  map.city(niiX, niiY, 'Niigata', { dx: 5.5, dy: -1.5, size: 2.1 });
+  map.city(niiX, niiY, 'Niigata', { dx: 1.4, dy: 2.0, size: 2.0, align: 'left' });
   // Sado label
   const [sadX, sadY] = proj(138.4, 38.05);
   map.label('Sado', sadX - 5, sadY - 2, { face: 'sans', size: 1.85, color: '#456473' });
@@ -223,12 +224,12 @@ async function main() {
 
   // Takasaki Daruma Doll (Gunma / North Kanto)
   const [darX, darY] = proj(139.0, 36.4);
-  map.el.daruma(darX, darY, 0.62);
+  map.el.daruma(darX + 6.5, darY, 0.62);
 
   // --- KANTO & TOKYO BAY ---
   const [tokX, tokY] = proj(139.76, 35.68);
-  map.el.tokyoTower(tokX + 5.5, tokY - 1.5, 0.58);
-  map.city(tokX, tokY, 'Tokyo', { capital: true, dx: 9.5, dy: 4.2, size: 3.1 });
+  map.el.tokyoTower(tokX + 8.0, tokY - 1.5, 0.58);
+  map.city(tokX, tokY, 'Tokyo', { capital: true, dx: 6.0, dy: 8.0, size: 3.0 });
 
   // Ryogoku Sumo Ring & Edo Sushi anchored off Tokyo Bay / Boso!
   map.el.sumoRing(206, 142, 0.82);
@@ -243,8 +244,8 @@ async function main() {
 
   // --- CHUBU & MT. FUJI ---
   const [fujX, fujY] = proj(138.73, 35.36);
-  map.el.mountain(fujX - 1.0, fujY + 0.5, 0.72, { snow: true });
-  map.label('Mt. Fuji', fujX - 1.0, fujY + 4.4, { face: 'serif-bold', size: 2.15 });
+  map.el.mountain(fujX - 1.0, fujY - 1.3, 0.68, { snow: true });
+  map.label('Mt. Fuji', fujX - 1.0, fujY + 3.7, { face: 'serif-bold', size: 2.15 });
 
   // Shizuoka Matcha Tea & Tokaido Shinkansen
   map.el.shinkansen(141, 156.5, 0.60, 0.14);
@@ -254,62 +255,63 @@ async function main() {
   map.label('Shizuoka Tea', 147, 176.0, { face: 'sans', size: 1.95 });
 
   const [nagX, nagY] = proj(136.90, 35.18);
-  map.city(nagX, nagY, 'Nagoya', { dy: -2.5, size: 2.1 });
+  map.city(nagX, nagY, 'Nagoya', { dx: -1.6, dy: -2.5, size: 2.1 });
 
   // --- KANSAI (Kyoto, Nara, Osaka) ---
   const [kyoX, kyoY] = proj(135.76, 35.01);
   map.el.pagoda(kyoX + 1.5, kyoY - 2.0, 0.58);
   map.el.sakura(kyoX - 5.5, kyoY - 2.5, 0.48);
-  map.city(kyoX, kyoY, 'Kyoto', { dx: 7.5, dy: -1.5, size: 2.3 });
+  map.city(kyoX, kyoY, 'Kyoto', { dx: 3.1, dy: 4.9, size: 2.3 });
 
   const [osaX, osaY] = proj(135.50, 34.69);
   map.el.castle(osaX - 5.0, osaY - 1.5, 0.50);
-  map.city(osaX, osaY, 'Osaka', { dx: -6.5, dy: 3.8, size: 2.2 });
+  map.city(osaX, osaY, 'Osaka', { dx: -2.0, dy: 4.5, size: 2.2 });
 
   const [narX, narY] = proj(135.83, 34.68);
-  map.el.deer(narX + 4.5, narY + 5.5, 0.48);
-  map.label('Nara Deer', narX + 5.5, narY + 9.0, { face: 'sans', size: 1.85 });
+  map.el.deer(narX + 5.5, narY + 9.0, 0.48);
+  map.label('Nara', narX + 1.1, narY + 5.2, { face: 'sans', size: 1.85, align: 'right' });
+  map.label('Deer', narX + 1.1, narY + 7.4, { face: 'sans', size: 1.85, align: 'right' });
 
   // Kyoto / Kansai Hanami & Dango vignette off Kii coast
-  map.el.sakura(105, 169, 0.58);
-  map.person(115, 170, 0.50, { seed: 'kyoto-kimono', pose: 'stand', hair: 'bun', shirt: { color: C.sakura }, pants: 'white', look: 0.5 });
-  map.el.dango(125, 169, 0.72);
-  map.label('Kyoto Hanami & Dango', 116, 174.5, { face: 'sans', size: 2.0 });
-  map.callout([115, 155], [osaX + 2, osaY + 5], { bendX: -2 });
+  map.el.sakura(99, 169, 0.58);
+  map.person(109, 170, 0.50, { seed: 'kyoto-kimono', pose: 'stand', hair: 'bun', shirt: { color: C.sakura }, pants: 'white', look: 0.5 });
+  map.el.dango(119, 169, 0.72);
+  map.label('Kyoto Hanami & Dango', 110, 174.5, { face: 'sans', size: 2.0 });
+  map.callout([109, 155], [osaX - 1, osaY + 6.3], { bendX: -1 });
 
   // --- CHUGOKU, SETO INLAND SEA & SHIKOKU ---
   const [hirX, hirY] = proj(132.45, 34.39);
-  map.city(hirX, hirY, 'Hiroshima', { dx: 6.5, dy: -3.2, size: 2.2 });
+  map.city(hirX, hirY, 'Hiroshima', { dx: 8.0, dy: -1.6, size: 2.2 });
   map.el.torii(hirX - 6.0, hirY + 5.2, 0.56);
-  map.label('Miyajima', hirX - 13.5, hirY + 5.5, { face: 'sans', size: 1.85 });
+  map.label('Miyajima', hirX - 6.0, hirY + 7.6, { face: 'sans', size: 1.85 });
 
   map.el.origamiCrane(92, 106, 0.78);
-  map.label('Peace Origami', 92, 111.5, { face: 'sans', size: 1.95 });
-  map.callout([88, 112], [hirX + 1, hirY - 4], { bendX: 2 });
+  map.label('Peace Origami', 92, 108.5, { face: 'sans', size: 1.95 });
+  map.callout([89, 109.8], [hirX + 1, hirY - 4], { bendX: 2 });
 
   // Shikoku cities + Henro Pilgrim in conical straw hat!
   map.city(...proj(132.76, 33.84), 'Matsuyama', { dy: 3.4, size: 2.0 });
   const [kocX, kocY] = proj(133.53, 33.56);
   map.city(kocX, kocY, 'Kochi', { dx: 5.5, dy: 2.5, size: 2.0 });
 
-  map.person(84, 164, 0.50, {
+  map.person(84, 170, 0.50, {
     seed: 'shikoku-pilgrim', pose: 'stand', hair: 'short',
     hat: 'conical', hatColor: C.ochre, shirt: { color: C.paper }, pants: 'white', look: 0.5,
   });
-  map.el.onigiri(71, 163, 0.68);
-  map.label('Shikoku Pilgrim', 79, 168.5, { face: 'sans', size: 2.0 });
-  map.callout([82, 149], [kocX, kocY + 2], { bendX: 1 });
+  map.el.onigiri(71, 169, 0.68);
+  map.label('Shikoku Pilgrim', 79, 174.5, { face: 'sans', size: 2.0 });
+  map.callout([84, 148], [kocX, kocY + 2], { bendX: 1 });
 
   // --- KYUSHU (Southwest) ---
   const [fukX, fukY] = proj(130.40, 33.59);
-  map.city(fukX, fukY, 'Fukuoka', { dx: 6.5, dy: -2.0, size: 2.3 });
+  map.city(fukX, fukY, 'Fukuoka', { dx: 1.8, dy: 3.1, size: 2.2, align: 'left' });
 
   const [ngsX, ngsY] = proj(129.87, 32.75);
-  map.city(ngsX, ngsY, 'Nagasaki', { dx: -7.5, dy: -1.0, size: 2.0 });
-  map.el.lighthouse(20, 142, 0.60);
+  map.city(ngsX, ngsY, 'Nagasaki', { dx: -3.6, dy: -0.6, size: 2.0, align: 'right' });
+  map.el.lighthouse(20, 146, 0.60);
 
   const [kagX, kagY] = proj(130.55, 31.59);
-  map.city(kagX, kagY, 'Kagoshima', { dx: 8.5, dy: 2.5, size: 2.1 });
+  map.city(kagX, kagY, 'Kagoshima', { dx: 3.0, dy: -3.2, size: 2.0, align: 'left' });
 
   // Hakata Ramen / Gyudon & Kyushu Chef
   map.el.foodBowl(25, 114, 0.72, { bowlColor: C.crimson });

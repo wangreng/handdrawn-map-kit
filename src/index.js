@@ -8,7 +8,7 @@ const EL = require('./elements');
 function createMap(opts = {}) {
   const w = opts.w ?? 300;
   const h = opts.h ?? 200;
-  const ppm = opts.ppm ?? (process.argv.includes('--fast') ? 5 : 10);
+  const ppm = opts.ppm ?? 10;
   const pad = opts.pad ?? 4.8;
   const inner = opts.inner ?? 8.0;
 
