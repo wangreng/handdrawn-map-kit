@@ -23,10 +23,13 @@ function fromGeoJSON(geojson) {
     if (!id || !name) continue;
     const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
     const names = [...new Set([p.ADMIN, p.NAME_LONG, p.BRK_NAME, p.FORMAL_EN].filter((n) => valid(n) && n !== name))];
+    // Natural Earth's own code can differ from ISO 3166 (South Sudan is SDS / SSD)
+    const codes = [...new Set([p.ISO_A3_EH, p.ISO_A3].filter((c) => valid(c) && String(c).toUpperCase() !== String(id).toUpperCase()))];
     countries.push({
       id: String(id).toUpperCase(),
       name,
       names,
+      ...(codes.length ? { codes } : {}),
       iso2: [p.ISO_A2_EH, p.ISO_A2].find((v) => valid(v) && String(v).length === 2) || null,
       continent: valid(p.CONTINENT) ? p.CONTINENT : null,
       // GeoJSON rings repeat their first point at the end; drop it
@@ -97,15 +100,16 @@ function index(raw, label) {
       bbox: bboxOf(polygons),
       mainBBox: mainBBoxOf(polygons),
     };
-    for (const key of [c.id, c.name, ...(c.names || [])]) {
-      const k = norm(key);
-      if (k && !byKey.has(k)) byKey.set(k, country);
-    }
-    return { country, iso2: c.iso2 };
+    return { country, keys: [[c.id], [c.name], c.codes || [], c.names || [], c.iso2 ? [c.iso2] : []] };
   });
-  // Two-letter codes last so they never shadow a name or three-letter code
-  for (const { country, iso2 } of countries) {
-    if (iso2 && !byKey.has(norm(iso2))) byKey.set(norm(iso2), country);
+  // Primary codes win over names, names over alternative codes and aliases, two-letter codes come last
+  for (let tier = 0; tier < 5; tier++) {
+    for (const { country, keys } of countries) {
+      for (const key of keys[tier]) {
+        const k = norm(key);
+        if (k && !byKey.has(k)) byKey.set(k, country);
+      }
+    }
   }
   return { source: raw.source || label, countries: countries.map((c) => c.country), byKey };
 }

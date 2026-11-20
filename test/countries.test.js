@@ -13,6 +13,10 @@ test('countries are found by three-letter code, two-letter code and name', () =>
   }
   assert.equal(getCountry('France').id, 'FRA');
   assert.equal(getCountry("Côte d'Ivoire").id, 'CIV');
+  // ISO codes that differ from Natural Earth's own
+  assert.equal(getCountry('SSD').name, 'S. Sudan');
+  assert.equal(getCountry('PSE').name, 'Palestine');
+  assert.equal(getCountry('ESH').name, 'W. Sahara');
   assert.ok(listCountries().length > 200);
 });
 
