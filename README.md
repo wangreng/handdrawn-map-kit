@@ -28,7 +28,6 @@ npm run demo       # Fast preview (~6s, 1500x1000 px) -> out/japan_cultural_map.
 npm run demo:hd    # High-res print quality (~20s, 3000x2000 px) -> out/japan_cultural_map.png
 npm run demo:korea     # Korea, fast preview -> out/korea_cultural_map.png
 npm run demo:korea:hd  # Korea, 3000x2000 px
-npm test
 ```
 
 ## Map Any Country
