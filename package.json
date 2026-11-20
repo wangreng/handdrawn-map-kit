@@ -7,7 +7,11 @@
   "main": "src/index.js",
   "scripts": {
     "demo": "node examples/japan_cultural_map.js --fast",
-    "demo:hd": "node examples/japan_cultural_map.js"
+    "demo:hd": "node examples/japan_cultural_map.js",
+    "demo:korea": "node examples/korea_cultural_map.js --fast",
+    "demo:korea:hd": "node examples/korea_cultural_map.js",
+    "build:data": "node scripts/build-natural-earth.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.0.13"

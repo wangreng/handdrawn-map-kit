@@ -1,6 +1,7 @@
 'use strict';
 const D = require('../engine/lib/draw');
 const MK = require('../engine/lib/mask');
+const { drawFlag } = require('./flags');
 
 // Authentic hand-colored vintage atlas palette
 const PALETTE = {
@@ -62,6 +63,9 @@ function part(P, poly, color, o = {}) {
   }
 }
 
+const KM_PER_DEG_LON = 111.32;
+const KM_PER_DEG_LAT = 110.57;
+
 // Oblique / Conic-like geographic projection from (lon, lat) -> [x, y] mm
 function createProjection(o = {}) {
   const lon0 = o.lon0 ?? 137.6;
@@ -72,19 +76,75 @@ function createProjection(o = {}) {
   const a = ((o.rotDeg ?? 26) * Math.PI) / 180;
 
   const fn = (lon, lat) => {
-    const xk = (lon - lon0) * 111.32 * Math.cos((lat * Math.PI) / 180);
-    const yk = -(lat - lat0) * 110.57;
+    let dLon = lon - lon0;
+    if (dLon > 180) dLon -= 360;
+    else if (dLon < -180) dLon += 360;
+    const xk = dLon * KM_PER_DEG_LON * Math.cos((lat * Math.PI) / 180);
+    const yk = -(lat - lat0) * KM_PER_DEG_LAT;
     const xr = xk * Math.cos(a) - yk * Math.sin(a);
     const yr = xk * Math.sin(a) + yk * Math.cos(a);
     return [cx + xr * scale, cy + yr * scale];
   };
   fn.pts = (arr) => arr.map(([lon, lat]) => fn(lon, lat));
+  // [x, y] mm -> [lon, lat]
+  fn.inverse = (x, y) => {
+    const xr = (x - cx) / scale, yr = (y - cy) / scale;
+    const xk = xr * Math.cos(a) + yr * Math.sin(a);
+    const yk = -xr * Math.sin(a) + yr * Math.cos(a);
+    const lat = Math.max(-89.9, Math.min(89.9, lat0 - yk / KM_PER_DEG_LAT));
+    return [lon0 + xk / (KM_PER_DEG_LON * Math.cos((lat * Math.PI) / 180)), lat];
+  };
   fn.northAngle = (lon, lat) => {
     const p0 = fn(lon, lat);
     const p1 = fn(lon, lat + 0.5);
     return Math.atan2(p1[0] - p0[0], -(p1[1] - p0[1]));
   };
+  // [west, south, east, north] visible inside the mm rectangle [x0, y0, x1, y1]
+  fn.extent = ([x0, y0, x1, y1]) => {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (let i = 0; i <= 12; i++) {
+      for (let j = 0; j <= 12; j++) {
+        const [lon, lat] = fn.inverse(x0 + ((x1 - x0) * i) / 12, y0 + ((y1 - y0) * j) / 12);
+        if (lon < w) w = lon;
+        if (lon > e) e = lon;
+        if (lat < s) s = lat;
+        if (lat > n) n = lat;
+      }
+    }
+    return [w, s, e, n];
+  };
+  fn.mmPerKm = scale;
+  fn.params = { lon0, lat0, cx, cy, scale, rotDeg: o.rotDeg ?? 26 };
   return fn;
+}
+
+// Projection that fits the geographic box [west, south, east, north] inside the mm rectangle
+// `frame` = [x0, y0, x1, y1], centred, at the largest scale that still shows the whole box.
+function fitProjection(bbox, o = {}) {
+  const [w, s, e, n] = bbox;
+  const [x0, y0, x1, y1] = o.frame;
+  const rotDeg = o.rotDeg ?? 0;
+  const unit = createProjection({ lon0: (w + e) / 2, lat0: (s + n) / 2, cx: 0, cy: 0, scale: 1, rotDeg });
+  let ax = Infinity, ay = Infinity, bx = -Infinity, by = -Infinity;
+  for (let i = 0; i <= 16; i++) {
+    const t = i / 16;
+    for (const [lon, lat] of [[w + (e - w) * t, s], [w + (e - w) * t, n], [w, s + (n - s) * t], [e, s + (n - s) * t]]) {
+      const [x, y] = unit(lon, lat);
+      if (x < ax) ax = x;
+      if (x > bx) bx = x;
+      if (y < ay) ay = y;
+      if (y > by) by = y;
+    }
+  }
+  const scale = (o.zoom ?? 1) * Math.min((x1 - x0) / (bx - ax), (y1 - y0) / (by - ay));
+  return createProjection({
+    lon0: (w + e) / 2,
+    lat0: (s + n) / 2,
+    cx: (x0 + x1) / 2 - ((ax + bx) / 2) * scale,
+    cy: (y0 + y1) / 2 - ((ay + by) / 2) * scale,
+    scale,
+    rotDeg,
+  });
 }
 
 // Fast paper-tooth-preserving watercolor/tinted-paper wash (500x faster than 1,200 pencil strokes for oceans!)
@@ -123,15 +183,31 @@ function drawOcean(P, { pad = 5, color = PALETTE.ocean } = {}) {
   wash(P, [rect], color, { strength: 0.82, toothAmt: 0.38 });
 }
 
-// Clip a polyline to rectangular box [x0, y0, x1, y1] and return visible runs + border crossings
+// Clip a polyline to rectangular box [x0, y0, x1, y1]; runs start and end exactly on the box edge
 function clipRuns(pts, x0, y0, x1, y1) {
   const inside = ([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+  // Point where segment a (inside) -> b (outside) leaves the box
+  const exit = (a, b) => {
+    let t = 1;
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    if (b[0] < x0) t = Math.min(t, (x0 - a[0]) / dx);
+    if (b[0] > x1) t = Math.min(t, (x1 - a[0]) / dx);
+    if (b[1] < y0) t = Math.min(t, (y0 - a[1]) / dy);
+    if (b[1] > y1) t = Math.min(t, (y1 - a[1]) / dy);
+    return [a[0] + dx * t, a[1] + dy * t];
+  };
   const runs = [];
   let cur = [];
-  for (const p of pts) {
-    if (inside(p)) cur.push(p);
-    else {
-      if (cur.length > 1) runs.push(cur);
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], prev = pts[i - 1];
+    if (inside(p)) {
+      if (!cur.length && prev) cur.push(exit(p, prev));
+      cur.push(p);
+    } else {
+      if (cur.length) {
+        cur.push(exit(prev, p));
+        runs.push(cur);
+      }
       cur = [];
     }
   }
@@ -139,32 +215,144 @@ function clipRuns(pts, x0, y0, x1, y1) {
   return runs;
 }
 
-// Draw curved latitude/longitude graticule grid across the map + return edge label positions
+// Clip a closed ring to the box [x0, y0, x1, y1] (Sutherland–Hodgman)
+function clipRing(ring, x0, y0, x1, y1) {
+  const edges = [
+    [(p) => p[0] >= x0, (a, b) => [x0, a[1] + ((b[1] - a[1]) * (x0 - a[0])) / (b[0] - a[0])]],
+    [(p) => p[0] <= x1, (a, b) => [x1, a[1] + ((b[1] - a[1]) * (x1 - a[0])) / (b[0] - a[0])]],
+    [(p) => p[1] >= y0, (a, b) => [a[0] + ((b[0] - a[0]) * (y0 - a[1])) / (b[1] - a[1]), y0]],
+    [(p) => p[1] <= y1, (a, b) => [a[0] + ((b[0] - a[0]) * (y1 - a[1])) / (b[1] - a[1]), y1]],
+  ];
+  let out = ring;
+  for (const [keep, cut] of edges) {
+    const src = out;
+    out = [];
+    for (let i = 0; i < src.length; i++) {
+      const a = src[i], b = src[(i + 1) % src.length];
+      const ka = keep(a), kb = keep(b);
+      if (ka) out.push(a);
+      if (ka !== kb) out.push(cut(a, b));
+    }
+    if (out.length < 3) return [];
+  }
+  return out;
+}
+
+function ringAreaMm(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i], q = ring[(i + 1) % ring.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+
+// Drop vertices closer than `tol` mm to the line between their kept neighbours (Douglas–Peucker)
+function simplifyRing(ring, tol) {
+  const n = ring.length;
+  if (n < 5 || !(tol > 0)) return ring;
+  // Anchor on the vertex farthest from the first one so both halves are open polylines
+  let far = 1, farD = -1;
+  for (let i = 1; i < n; i++) {
+    const d = (ring[i][0] - ring[0][0]) ** 2 + (ring[i][1] - ring[0][1]) ** 2;
+    if (d > farD) { farD = d; far = i; }
+  }
+  const keep = new Uint8Array(n + 1);
+  keep[0] = keep[far] = keep[n] = 1;
+  const at = (i) => ring[i % n];
+  const stack = [[0, far], [far, n]];
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    const a = at(i0), b = at(i1);
+    const dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy;
+    let worst = -1, worstD = tol * tol;
+    for (let i = i0 + 1; i < i1; i++) {
+      const p = at(i);
+      const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+      const d = (p[0] - a[0] - t * dx) ** 2 + (p[1] - a[1] - t * dy) ** 2;
+      if (d > worstD) { worstD = d; worst = i; }
+    }
+    if (worst > 0) {
+      keep[worst] = 1;
+      stack.push([i0, worst], [worst, i1]);
+    }
+  }
+  const out = ring.filter((_, i) => keep[i]);
+  return out.length >= 3 ? out : ring;
+}
+
+// Project (lon, lat) polygons — each a list of rings, outer ring first — to hand-drawable mm rings.
+// Rings are clipped to the sheet, simplified, smoothed, and islets smaller than `minArea` mm² dropped.
+// Returns a flat list of rings: pass it to drawCoastWaterlines as-is, or to part() as one shape.
+function geoRings(P, proj, polygons, o = {}) {
+  const m = o.margin ?? 12;
+  const [x0, y0, x1, y1] = o.frame || [-m, -m, P.w + m, P.h + m];
+  const minArea = o.minArea ?? 0.5;
+  const out = [];
+  for (const poly of polygons) {
+    for (let k = 0; k < poly.length; k++) {
+      let ring = clipRing(proj.pts(poly[k]), x0, y0, x1, y1);
+      if (ring.length < 3 || ringAreaMm(ring) < minArea) {
+        if (k === 0) break; // no outer ring left, so its holes go too
+        continue;
+      }
+      ring = simplifyRing(ring, o.simplify ?? 0.12);
+      out.push(o.smooth === false || ring.length < 4 ? ring : D.curve(ring, true, o.step ?? 0.3));
+    }
+  }
+  return out;
+}
+
+// Pick evenly spaced "nice" graticule values covering [lo, hi]
+function niceSteps(lo, hi, step) {
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  return out;
+}
+function niceStep(span, maxLines = 8) {
+  for (const s of [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 20, 30, 45]) if (span / s <= maxLines) return s;
+  return 60;
+}
+
+const degLabel = (v, pos, neg) => {
+  const n = Math.round(Math.abs(v) * 100) / 100;
+  return n === 0 || n === 180 ? `${n}°` : `${n}°${v > 0 ? pos : neg}`;
+};
+
+// Draw curved latitude/longitude graticule grid across the map + return edge label positions.
+// `lons` / `lats` default to round values chosen from the area the projection shows on this sheet.
 function drawGraticule(P, proj, o = {}) {
   const inner = o.inner ?? 8.4;
   const x0 = inner, y0 = inner, x1 = P.w - inner, y1 = P.h - inner;
-  const lons = o.lons || [126, 130, 134, 138, 142, 146];
-  const lats = o.lats || [30, 34, 38, 42, 46];
+  const [west, south, east, north] = proj.extent([x0, y0, x1, y1]);
+  const step = o.step ?? Math.max(niceStep(east - west), niceStep(north - south));
+  const lons = o.lons || niceSteps(west, east, step);
+  const lats = o.lats || niceSteps(Math.max(-85, south), Math.min(85, north), step);
   const ticks = [];
+  const N = 160;
 
   for (const lon of lons) {
     const raw = [];
-    for (let lat = 26; lat <= 50; lat += 0.35) raw.push(proj(lon, lat));
+    for (let i = 0; i <= N; i++) raw.push(proj(lon, Math.max(-89, Math.min(89, south + ((north - south) * i) / N))));
     for (const run of clipRuns(raw, x0, y0, x1, y1)) {
       P.ink(run, { nib: 0.1, color: PALETTE.graticule, tremor: 0.25 });
-      const first = run[0], last = run[run.length - 1];
-      if (Math.abs(first[1] - y1) < 3.5) ticks.push({ x: first[0], y: y1 - 1.2, text: `${lon}°E`, side: 'bottom' });
-      if (Math.abs(last[1] - y0) < 3.5) ticks.push({ x: last[0], y: y0 + 2.8, text: `${lon}°E`, side: 'top' });
+      const text = degLabel(lon > 180 ? lon - 360 : lon, 'E', 'W');
+      for (const end of [run[0], run[run.length - 1]]) {
+        if (Math.abs(end[1] - y1) < 0.5) ticks.push({ x: end[0], y: y1 - 1.2, text, side: 'bottom' });
+        if (Math.abs(end[1] - y0) < 0.5) ticks.push({ x: end[0], y: y0 + 2.8, text, side: 'top' });
+      }
     }
   }
   for (const lat of lats) {
     const raw = [];
-    for (let lon = 122; lon <= 152; lon += 0.35) raw.push(proj(lon, lat));
+    for (let i = 0; i <= N; i++) raw.push(proj(west + ((east - west) * i) / N, lat));
     for (const run of clipRuns(raw, x0, y0, x1, y1)) {
       P.ink(run, { nib: 0.1, color: PALETTE.graticule, tremor: 0.25 });
-      const first = run[0], last = run[run.length - 1];
-      if (Math.abs(first[0] - x0) < 3.5) ticks.push({ x: x0 + 1.4, y: first[1] + 0.8, text: `${lat}°N`, side: 'left' });
-      if (Math.abs(last[0] - x1) < 3.5) ticks.push({ x: x1 - 1.4, y: last[1] + 0.8, text: `${lat}°N`, side: 'right' });
+      const text = degLabel(lat, 'N', 'S');
+      for (const end of [run[0], run[run.length - 1]]) {
+        if (Math.abs(end[0] - x0) < 0.5) ticks.push({ x: x0 + 1.4, y: end[1] + 0.8, text, side: 'left' });
+        if (Math.abs(end[0] - x1) < 0.5) ticks.push({ x: x1 - 1.4, y: end[1] + 0.8, text, side: 'right' });
+      }
     }
   }
   return ticks;
@@ -405,13 +593,10 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   }
 
   // Country Title + Waving National Flag
-  P.text(info.country || 'JAPAN', x + 5.5, y + 12.2, { face: 'serif-bold', size: 9.2, align: 'left', color: PALETTE.ink });
-  if (info.flag === 'japan') {
-    const fx = x + w - 20.5, fy = y + 4.4;
-    const fpoly = D.curve([[fx, fy], [fx + 6.5, fy - 0.6], [fx + 13, fy + 0.4], [fx + 13, fy + 8.6], [fx + 6.5, fy + 7.8], [fx, fy + 8.6]]);
-    part(P, fpoly, PALETTE.paper, { nib: 0.18, pressure: 0.35 });
-    part(P, D.ell(fx + 6.5, fy + 4.1, 2.4, 2.4), PALETTE.crimson, { nib: 0.12, pressure: 0.9 });
+  if (info.country) {
+    P.text(info.country, x + 5.5, y + 12.2, { face: 'serif-bold', size: info.titleSize ?? 9.2, align: 'left', color: PALETTE.ink });
   }
+  if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
   if (info.subtitle) {
     P.italic(info.subtitle, x + 5.8, y + 16.4, { face: 'serif-bold', size: 2.7, align: 'left', color: PALETTE.crimson });
   }
@@ -420,39 +605,52 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   P.ink([[x + 5, y + 18.6], [x + w - 5, y + 18.6]], { nib: 0.12, color: '#9c8e7b' });
 
   // Fact rows (left column) & Map Legend (right column)
-  const facts = [
-    `Capital: ${info.capital || 'Tokyo'}`,
-    `Language: ${info.language || 'Japanese'}`,
-    `Pop.: ${info.population || '124M'}`,
-    `Area: ${info.area || '377,975 km2'}`,
-  ];
+  const facts = info.facts || [
+    ['Capital', info.capital],
+    ['Language', info.language],
+    ['Pop.', info.population],
+    ['Area', info.area],
+  ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`);
   facts.forEach((txt, i) => {
     P.text(txt, x + 5.5, y + 23.0 + i * 4.2, { face: 'sans-bold', size: 2.25, align: 'left', color: PALETTE.ink });
   });
 
-  // Legend on right side of cartouche
+  // Legend on right side of cartouche: [{ symbol: 'capital' | 'city' | 'route' | 'river', label, color }]
   const lx = x + w * 0.58;
-  P.dot(lx, y + 22.2, 1.1, PALETTE.crimson);
-  P.outline([D.ell(lx, y + 22.2, 1.7, 1.7)], { nib: 0.13, color: PALETTE.crimson });
-  P.text('Capital', lx + 3.2, y + 23.0, { face: 'sans', size: 2.15, align: 'left' });
+  const legend = info.legend || [
+    { symbol: 'capital', label: 'Capital' },
+    { symbol: 'city', label: 'Major City' },
+    { symbol: 'route', label: 'Railway' },
+  ];
+  legend.forEach((item, i) => {
+    const ly = y + 22.2 + i * 4.5;
+    if (item.symbol === 'capital') {
+      P.dot(lx, ly, 1.1, item.color || PALETTE.crimson);
+      P.outline([D.ell(lx, ly, 1.7, 1.7)], { nib: 0.13, color: item.color || PALETTE.crimson });
+    } else if (item.symbol === 'city') {
+      P.dot(lx, ly + 0.1, 0.8, item.color || PALETTE.ink);
+    } else if (item.symbol === 'river') {
+      P.ink([[lx - 2.0, ly], [lx + 2.2, ly]], { nib: 0.36, color: item.color || PALETTE.river });
+    } else {
+      P.ink([[lx - 2.0, ly], [lx - 0.3, ly]], { nib: 0.2, color: item.color || PALETTE.navy });
+      P.ink([[lx + 0.7, ly], [lx + 2.2, ly]], { nib: 0.2, color: item.color || PALETTE.navy });
+    }
+    P.text(item.label, lx + 3.2, ly + 0.7, { face: 'sans', size: 2.15, align: 'left' });
+  });
 
-  P.dot(lx, y + 26.8, 0.8, PALETTE.ink);
-  P.text('Major City', lx + 3.2, y + 27.5, { face: 'sans', size: 2.15, align: 'left' });
-
-  P.ink([[lx - 2.0, y + 31.2], [lx - 0.3, y + 31.2]], { nib: 0.2, color: PALETTE.navy });
-  P.ink([[lx + 0.7, y + 31.2], [lx + 2.2, y + 31.2]], { nib: 0.2, color: PALETTE.navy });
-  P.text('Shinkansen', lx + 3.2, y + 31.9, { face: 'sans', size: 2.15, align: 'left' });
-
-  // Graphical Scale Bar across bottom of cartouche
+  // Graphical Scale Bar across bottom of cartouche: three segments of a round number of km
   const sy = y + h - 5.2, sx0 = x + 6;
-  const seg = 11.5; // ~100 km at scale 0.140 -> 14 mm per 100 km! Let's make 14mm = 100km!
-  const km100 = info.mmPer100km ?? 14.0;
+  const mmPerKm = info.mmPerKm ?? (info.mmPer100km ?? 14.0) / 100;
+  const unit = info.scaleKm ?? (info.mmPerKm
+    ? [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000].find((u) => u * mmPerKm >= 9) ?? 5000
+    : 100);
+  const seg = unit * mmPerKm;
   for (let k = 0; k < 3; k++) {
-    const bx = sx0 + k * km100;
-    part(P, [[bx, sy], [bx + km100, sy], [bx + km100, sy + 1.4], [bx, sy + 1.4]], k % 2 === 0 ? PALETTE.ink : PALETTE.paper, { nib: 0.12 });
-    P.text(String(k * 100), bx, sy - 0.8, { face: 'sans', size: 1.85, align: 'center' });
+    const bx = sx0 + k * seg;
+    part(P, [[bx, sy], [bx + seg, sy], [bx + seg, sy + 1.4], [bx, sy + 1.4]], k % 2 === 0 ? PALETTE.ink : PALETTE.paper, { nib: 0.12 });
+    P.text(String(k * unit), bx, sy - 0.8, { face: 'sans', size: 1.85, align: 'center' });
   }
-  P.text('300 km', sx0 + 3 * km100, sy - 0.8, { face: 'sans-bold', size: 1.85, align: 'center' });
+  P.text(`${3 * unit} km`, sx0 + 3 * seg, sy - 0.8, { face: 'sans-bold', size: 1.85, align: 'center' });
 }
 
 // Framed Inset Map Box (e.g., Ryukyu / Okinawa Islands)
@@ -474,6 +672,10 @@ module.exports = {
   at,
   part,
   createProjection,
+  fitProjection,
+  geoRings,
+  clipRing,
+  simplifyRing,
   drawOcean,
   drawGraticule,
   drawCoastWaterlines,

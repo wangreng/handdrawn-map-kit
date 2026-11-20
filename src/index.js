@@ -4,6 +4,8 @@ const { person, POSES } = require('../engine/lib/people');
 const D = require('../engine/lib/draw');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
+const GEO = require('./geo');
+const FLAGS = require('./flags');
 
 function createMap(opts = {}) {
   const w = opts.w ?? 300;
@@ -39,6 +41,41 @@ function createMap(opts = {}) {
     part: (poly, color, o) => M.part(P, poly, color, o),
     at: M.at,
     createProjection: M.createProjection,
+    // Projection showing `target` (country code / name, or [west, south, east, north]) as large as
+    // fits in `frame` (default: the whole map area inside the border)
+    fitProjection(target, o = {}) {
+      const bbox = Array.isArray(target) ? target : GEO.getCountry(target, o.source).mainBBox;
+      const m = inner + (o.margin ?? 6);
+      return M.fitProjection(bbox, { ...o, frame: o.frame || [m, m, w - m, h - m] });
+    },
+
+    // Natural Earth country outline as smoothed mm rings, ready for part() / coastWaterlines()
+    countryRings: (proj, id, o = {}) => M.geoRings(P, proj, GEO.getCountry(id, o.source).polygons, o),
+    // Draw `focus` (one country or a list) with its neighbours and coastal waterlines.
+    // Returns { focus: [{ country, rings }], neighbors: [{ country, rings }] }.
+    countries(proj, o = {}) {
+      const focus = [].concat(o.focus || []).map((id) => GEO.getCountry(id, o.source));
+      const ids = new Set(focus.map((c) => c.id));
+      let neighbors = [];
+      if (Array.isArray(o.neighbors)) neighbors = o.neighbors.map((id) => GEO.getCountry(id, o.source));
+      else if (o.neighbors !== false) neighbors = GEO.countriesInBBox(proj.extent([0, 0, w, h]), o.source);
+      const ringsOf = (country) => ({ country, rings: M.geoRings(P, proj, country.polygons, o) });
+      const out = {
+        focus: focus.map(ringsOf),
+        neighbors: neighbors.filter((c) => !ids.has(c.id)).map(ringsOf).filter((n) => n.rings.length),
+      };
+      const all = [...out.neighbors, ...out.focus].filter((c) => c.rings.length);
+      if (o.waterlines !== false && all.length) M.drawCoastWaterlines(P, all.flatMap((c) => c.rings), o.waterlines || {});
+      for (const n of out.neighbors) {
+        M.part(P, n.rings, o.neighborColor || M.PALETTE.neighborLand, { pressure: 0.55, passes: 2, blunt: true, nib: 0.26, outlineColor: '#5c5549' });
+      }
+      for (const [i, f] of out.focus.entries()) {
+        if (!f.rings.length) continue;
+        const color = [].concat(o.color || M.PALETTE.land)[i] ?? M.PALETTE.land;
+        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: 0.32 });
+      }
+      return out;
+    },
 
     // Cartographic layers
     graticule(proj, o = {}) {
@@ -76,4 +113,16 @@ function createMap(opts = {}) {
   };
 }
 
-module.exports = { createMap, createProjection: M.createProjection, PALETTE: M.PALETTE, POSES };
+module.exports = {
+  createMap,
+  createProjection: M.createProjection,
+  fitProjection: M.fitProjection,
+  PALETTE: M.PALETTE,
+  POSES,
+  // Natural Earth country data
+  getCountry: GEO.getCountry,
+  listCountries: GEO.listCountries,
+  countriesInBBox: GEO.countriesInBBox,
+  loadCountries: GEO.loadCountries,
+  FLAGS: FLAGS.FLAGS,
+};
