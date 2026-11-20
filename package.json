@@ -12,6 +12,7 @@
   "files": [
     "src/",
     "engine/",
+    "data/",
     "LICENSE",
     "README.md"
   ],
@@ -21,6 +22,9 @@
   "scripts": {
     "demo": "node examples/japan_cultural_map.js --fast",
     "demo:hd": "node examples/japan_cultural_map.js",
+    "demo:korea": "node examples/korea_cultural_map.js --fast",
+    "demo:korea:hd": "node examples/korea_cultural_map.js",
+    "build:data": "node scripts/build-natural-earth.js",
     "lint": "eslint .",
     "test": "node --test"
   },

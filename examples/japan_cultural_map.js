@@ -345,6 +345,11 @@ async function main() {
     population: '124 Million',
     area: '377,975 km2',
     mmPer100km: 14.0,
+    legend: [
+      { symbol: 'capital', label: 'Capital' },
+      { symbol: 'city', label: 'Major City' },
+      { symbol: 'route', label: 'Shinkansen' },
+    ],
   });
 
   // True-North Aligned Compass Rose in the Pacific Ocean (rotated +26° to match meridians!)
