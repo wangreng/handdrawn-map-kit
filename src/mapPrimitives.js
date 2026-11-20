@@ -445,7 +445,6 @@ function drawCartouche(P, x, y, w, h, info = {}) {
 
   // Graphical Scale Bar across bottom of cartouche
   const sy = y + h - 5.2, sx0 = x + 6;
-  const seg = 11.5; // ~100 km at scale 0.140 -> 14 mm per 100 km! Let's make 14mm = 100km!
   const km100 = info.mmPer100km ?? 14.0;
   for (let k = 0; k < 3; k++) {
     const bx = sx0 + k * km100;

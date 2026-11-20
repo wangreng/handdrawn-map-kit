@@ -57,6 +57,25 @@ async function main() {
 main();
 ```
 
+Output resolution is set by the `ppm` option (pixels per millimetre, default `10`): `createMap({ w: 300, h: 200, ppm: 5 })` renders a 1500×1000 preview.
+
+## Using It From Another Project
+
+```bash
+npm install github:wangreng/handdrawn-map-kit
+```
+
+```js
+const { createMap, createProjection, PALETTE, POSES } = require('handdrawn-map-kit');
+```
+
+## Development
+
+```bash
+npm run lint    # ESLint
+npm test        # node:test suite (projection, elements, poses, PNG output, seed determinism)
+```
+
 ## Directory Structure
 
 - `src/index.js` — Main `createMap()` entry point
