@@ -117,6 +117,21 @@ test('countries on the far side of the globe do not leak onto the sheet', () => 
   assert.ok(labels.every((t) => parseFloat(t) <= 180), labels.join(' '));
 });
 
+test('one focus colour applies to every focus country', () => {
+  const pixelAt = (color, lon, lat) => {
+    const map = createMap({ w: 150, h: 100, ppm: 2, seed: 't', border: false });
+    const proj = map.fitProjection([124, 33, 131, 43]);
+    map.countries(proj, { focus: ['KOR', 'PRK'], color, neighbors: false, waterlines: false });
+    const [x, y] = proj(lon, lat).map((v) => Math.round(v * 2));
+    const i = 3 * (y * map.P.S.W + x);
+    return [...map.P.S.rgb.slice(i, i + 3)].map(Math.round);
+  };
+  const north = [126.8, 40.2];
+  // A single string reaches the second country exactly like an explicit list does
+  assert.deepEqual(pixelAt('#3a7d44', ...north), pixelAt(['#3a7d44', '#3a7d44'], ...north));
+  assert.notDeepEqual(pixelAt('#3a7d44', ...north), pixelAt(['#3a7d44', '#d65340'], ...north));
+});
+
 test('flags resolve by code or country name and reject unknown ones', () => {
   assert.equal(resolveFlag('japan'), FLAGS.JPN);
   assert.equal(resolveFlag('KR'), FLAGS.KOR);

@@ -52,6 +52,7 @@ function createMap(opts = {}) {
     // Natural Earth country outline as smoothed mm rings, ready for part() / coastWaterlines()
     countryRings: (proj, id, o = {}) => M.geoRings(P, proj, GEO.getCountry(id, o.source).polygons, o),
     // Draw `focus` (one country or a list) with its neighbours and coastal waterlines.
+    // `color` is one colour for every focus country, or a list matching `focus`.
     // Returns { focus: [{ country, rings }], neighbors: [{ country, rings }] }.
     countries(proj, o = {}) {
       const focus = [].concat(o.focus || []).map((id) => GEO.getCountry(id, o.source));
@@ -71,7 +72,7 @@ function createMap(opts = {}) {
       }
       for (const [i, f] of out.focus.entries()) {
         if (!f.rings.length) continue;
-        const color = [].concat(o.color || M.PALETTE.land)[i] ?? M.PALETTE.land;
+        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || M.PALETTE.land;
         M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: 0.32 });
       }
       return out;
