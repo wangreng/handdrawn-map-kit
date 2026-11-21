@@ -45,10 +45,12 @@ function createMap(opts = {}) {
     part: (poly, color, o) => M.part(P, poly, color, o),
     at: M.at,
     createProjection: M.createProjection,
-    // Projection showing `target` (country code / name, or [west, south, east, north]) as large as
-    // fits in `frame` (default: the whole map area inside the border)
-    fitProjection(target, o = {}) {
-      const bbox = Array.isArray(target) ? target : GEO.getCountry(target, o.source).mainBBox;
+    // Projection showing `target` (country, admin-1, { country, admin1 }, or [west, south, east, north])
+    // as large as fits in `frame` (default: the whole map area inside the border)
+    fitProjection(target, rawOpts) {
+      const o = rawOpts || {};
+      const resolved = GEO.resolveRegion(target, o);
+      const bbox = o.fullBBox ? resolved.bbox : resolved.mainBBox;
       const m = inner + (o.margin ?? 6);
       return M.fitProjection(bbox, { ...o, frame: o.frame || [m, m, w - m, h - m] });
     },
@@ -80,6 +82,202 @@ function createMap(opts = {}) {
         M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: 0.32 });
       }
       return out;
+    },
+
+    // Natural Earth admin-1 (states/provinces) outline as smoothed mm rings
+    admin1Rings(proj, id, rawOpts) {
+      const o = rawOpts || {};
+      return M.geoRings(P, proj, GEO.getAdmin1(id, o).polygons, o);
+    },
+    // Draw admin-1 regions (filled focus + neighbors, or borders-only overlay when no focus & no fill)
+    admin1(proj, rawOpts) {
+      const o = rawOpts || {};
+      const focus = [].concat(o.focus || []).map((id) => GEO.getAdmin1(id, { country: o.country, source: o.source }));
+      const ids = new Set(focus.map((r) => r.id));
+      let neighbors = [];
+      if (Array.isArray(o.neighbors)) {
+        neighbors = o.neighbors.map((id) => GEO.getAdmin1(id, { country: o.country, source: o.source }));
+      } else if (o.neighbors !== false) {
+        neighbors = GEO.admin1InBBox(o.bbox || proj.extent([0, 0, w, h]), { country: o.country, source: o.source });
+      }
+      const ringsOf = (region) => ({ region, rings: M.geoRings(P, proj, region.polygons, o) });
+      const out = {
+        focus: focus.map(ringsOf),
+        neighbors: neighbors.filter((r) => !ids.has(r.id)).map(ringsOf).filter((n) => n.rings.length),
+      };
+      const bordersOnly = o.bordersOnly ?? (focus.length === 0 && !o.fill);
+      const borderColor = o.borderColor || '#7d7365';
+      const borderNib = o.borderNib ?? 0.16;
+      const all = [...out.neighbors, ...out.focus].filter((r) => r.rings.length);
+      if (o.waterlines && all.length) {
+        M.drawCoastWaterlines(P, all.flatMap((r) => r.rings), typeof o.waterlines === 'object' ? o.waterlines : {});
+      }
+      if (bordersOnly) {
+        for (const item of all) {
+          P.outline(item.rings, { nib: borderNib, color: borderColor });
+        }
+        return out;
+      }
+      for (const n of out.neighbors) {
+        const fill = typeof o.fill === 'string' ? o.fill : (o.neighborColor || M.PALETTE.neighborLand);
+        M.part(P, n.rings, fill, { pressure: 0.52, passes: 2, blunt: true, nib: o.neighborNib ?? 0.20, outlineColor: borderColor });
+      }
+      for (const [i, f] of out.focus.entries()) {
+        if (!f.rings.length) continue;
+        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || M.PALETTE.land;
+        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: o.nib ?? 0.30, outlineColor: o.outlineColor || M.PALETTE.ink });
+      }
+      return out;
+    },
+
+    // Draw Natural Earth rivers within the map extent (or named rivers)
+    geoRivers(proj, rawOpts) {
+      const o = rawOpts || {};
+      const rivers = o.names
+        ? [].concat(o.names).map((n) => GEO.findRiver(n, o.source)).filter(Boolean)
+        : GEO.riversInBBox(o.bbox || proj.extent([0, 0, w, h]), {
+          minRank: o.minRank,
+          maxRank: o.maxRank,
+          includeLakeCenterlines: o.includeLakeCenterlines,
+          source: o.source,
+        });
+      const out = [];
+      for (const river of rivers) {
+        const runs = M.geoLines(P, proj, river.lines, o);
+        if (!runs.length) continue;
+        const nib = typeof o.nib === 'function'
+          ? o.nib(river)
+          : (o.nib ?? Math.max(0.18, 0.56 - (river.rank ?? 5) * 0.045));
+        const color = o.color || M.PALETTE.river;
+        for (const run of runs) {
+          P.ink(run, { nib, color, tremor: o.tremor ?? 0.45 });
+        }
+        out.push({ river, runs });
+      }
+      return out;
+    },
+
+    // Draw Natural Earth lakes within the map extent (or named lakes)
+    geoLakes(proj, rawOpts) {
+      const o = rawOpts || {};
+      const lakes = o.names
+        ? [].concat(o.names).map((n) => GEO.findLake(n, o.source)).filter(Boolean)
+        : GEO.lakesInBBox(o.bbox || proj.extent([0, 0, w, h]), {
+          maxRank: o.maxRank,
+          minArea: o.minGeoArea,
+          source: o.source,
+        });
+      const out = [];
+      for (const lake of lakes) {
+        const rings = M.geoRings(P, proj, lake.polygons, { ...o, minArea: o.minArea ?? 0.3 });
+        if (!rings.length) continue;
+        M.part(P, rings, o.color || M.PALETTE.lake, {
+          pressure: o.pressure ?? 0.62,
+          passes: o.passes ?? 2,
+          nib: o.nib ?? 0.16,
+          outlineColor: o.outlineColor || '#4a7a96',
+        });
+        out.push({ lake, rings });
+      }
+      return out;
+    },
+
+    // Draw Natural Earth populated places within the map extent (or named places)
+    geoCities(proj, rawOpts) {
+      const o = rawOpts || {};
+      const places = o.names
+        ? [].concat(o.names).map((n) => GEO.findPlace(n, { country: o.country, admin1: o.admin1, source: o.source })).filter(Boolean)
+        : GEO.placesInBBox(o.bbox || proj.extent([0, 0, w, h]), {
+          country: o.country,
+          admin1: o.admin1,
+          maxRank: o.maxRank,
+          minPop: o.minPop,
+          capitalsOnly: o.capitalsOnly,
+          limit: o.limit ?? 12,
+          source: o.source,
+        });
+      const [x0, y0, x1, y1] = o.frame || [inner + 2, inner + 2, w - inner - 2, h - inner - 2];
+      const minSpacing = o.minSpacing ?? 0;
+      const pickLabel = (p) => {
+        if (o.labels === false) return '';
+        if (o.labelLang === 'zh') return p.zh || p.name;
+        if (o.labelLang === 'ja') return p.ja || p.name;
+        if (o.labelLang === 'ko') return p.ko || p.name;
+        return p.name;
+      };
+      const out = [];
+      for (const place of places) {
+        const [x, y] = proj(place.lon, place.lat);
+        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (minSpacing > 0 && !place.capital && out.some((c) => Math.hypot(c.x - x, c.y - y) < minSpacing)) continue;
+        const label = pickLabel(place);
+        if (o.draw !== false) {
+          M.drawCity(P, x, y, label, { capital: !!place.capital, ...(o.cityOpts || {}) });
+        }
+        out.push({ place, x, y, label, capital: !!place.capital });
+      }
+      return out;
+    },
+
+    // Draw Natural Earth mountain peaks and range landform chains within the map extent
+    geoMountains(proj, rawOpts) {
+      const o = rawOpts || {};
+      const bbox = o.bbox || proj.extent([0, 0, w, h]);
+      const [x0, y0, x1, y1] = o.frame || [inner + 4, inner + 4, w - inner - 4, h - inner - 4];
+      const s = o.scale ?? 1;
+      const snowElev = o.snowElev ?? 3500;
+
+      const rawPeaks = o.peaks === false
+        ? []
+        : GEO.peaksInBBox(bbox, { minElev: o.minElev, kind: o.peakKind ?? 'mountain', source: o.source });
+      const drawnPeaks = [];
+      const peakTuples = [];
+      for (const peak of rawPeaks) {
+        const [x, y] = proj(peak.lon, peak.lat);
+        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        const elevScale = peak.elevation ? Math.max(0.75, Math.min(1.4, peak.elevation / 4000)) : 1;
+        const pw = (o.peakW ?? 4.2) * s * elevScale;
+        const ph = (o.peakH ?? 5.0) * s * elevScale;
+        peakTuples.push([x, y, pw, ph, (peak.elevation ?? 0) >= snowElev]);
+        drawnPeaks.push({ peak, x, y });
+      }
+
+      const drawnRanges = [];
+      if (o.ranges !== false) {
+        const landforms = GEO.landformsInBBox(bbox, {
+          kinds: o.kinds || ['Range/mtn'],
+          maxRank: o.maxRank,
+          source: o.source,
+        });
+        for (const landform of landforms) {
+          const rings = M.geoRings(P, proj, landform.polygons, { ...o, minArea: o.minArea ?? 8 });
+          if (!rings.length) continue;
+          let rx0 = Infinity, ry0 = Infinity, rx1 = -Infinity, ry1 = -Infinity;
+          for (const [px, py] of rings[0]) {
+            if (px < rx0) rx0 = px;
+            if (px > rx1) rx1 = px;
+            if (py < ry0) ry0 = py;
+            if (py > ry1) ry1 = py;
+          }
+          const spanX = rx1 - rx0, spanY = ry1 - ry0;
+          const count = Math.max(2, Math.min(6, Math.round(spanX / (9 * s))));
+          const cy = (ry0 + ry1) / 2;
+          for (let i = 0; i < count; i++) {
+            const t = (i + 0.5) / count;
+            const px = rx0 + spanX * (0.18 + 0.64 * t);
+            const py = cy + ((i % 2 === 0 ? -1 : 1) * Math.min(2.5, spanY * 0.14));
+            if (px < x0 || px > x1 || py < y0 || py > y1) continue;
+            peakTuples.push([px, py, (o.peakW ?? 3.6) * s, (o.peakH ?? 4.2) * s, i % 2 === 0]);
+          }
+          drawnRanges.push({ landform, rings });
+        }
+      }
+
+      if (peakTuples.length) {
+        peakTuples.sort((a, b) => a[1] - b[1]);
+        M.drawMountainRange(P, peakTuples, { color: o.color });
+      }
+      return { peaks: drawnPeaks, ranges: drawnRanges };
     },
 
     // Cartographic layers
@@ -157,9 +355,32 @@ module.exports = {
   POSES,
   // Natural Earth country data
   getCountry: GEO.getCountry,
+  findCountry: GEO.findCountry,
   listCountries: GEO.listCountries,
   countriesInBBox: GEO.countriesInBBox,
   loadCountries: GEO.loadCountries,
+  // Natural Earth M2 layers: admin-1, rivers, lakes, places, landforms & region resolver
+  loadAdmin1: GEO.loadAdmin1,
+  getAdmin1: GEO.getAdmin1,
+  findAdmin1: GEO.findAdmin1,
+  listAdmin1: GEO.listAdmin1,
+  admin1InBBox: GEO.admin1InBBox,
+  loadRivers: GEO.loadRivers,
+  riversInBBox: GEO.riversInBBox,
+  findRiver: GEO.findRiver,
+  getRiver: GEO.getRiver,
+  loadLakes: GEO.loadLakes,
+  lakesInBBox: GEO.lakesInBBox,
+  findLake: GEO.findLake,
+  getLake: GEO.getLake,
+  loadPlaces: GEO.loadPlaces,
+  placesInBBox: GEO.placesInBBox,
+  findPlace: GEO.findPlace,
+  getPlace: GEO.getPlace,
+  loadLandforms: GEO.loadLandforms,
+  peaksInBBox: GEO.peaksInBBox,
+  landformsInBBox: GEO.landformsInBBox,
+  resolveRegion: GEO.resolveRegion,
   FLAGS: FLAGS.FLAGS,
   // Declarative spec & layout diagnostics
   loadSpec,

@@ -133,14 +133,33 @@ function createProjection(o = {}) {
 // Projection that fits the geographic box [west, south, east, north] inside the mm rectangle
 // `frame` = [x0, y0, x1, y1], centred, at the largest scale that still shows the whole box.
 function fitProjection(bbox, o = {}) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) {
+    throw new Error('Invalid bbox: expected [west, south, east, north] of 4 finite numbers');
+  }
   const [w, s, e, n] = bbox;
+  if (
+    typeof w !== 'number' || !Number.isFinite(w)
+    || typeof s !== 'number' || !Number.isFinite(s)
+    || typeof e !== 'number' || !Number.isFinite(e)
+    || typeof n !== 'number' || !Number.isFinite(n)
+    || s > n
+  ) {
+    throw new Error('Invalid bbox: expected [west, south, east, north] of 4 finite numbers with south <= north');
+  }
+  const eNorm = w > e ? e + 360 : e;
+  if (eNorm === w || n === s) {
+    throw new Error('Invalid bbox: zero-span bounding box cannot be fitted');
+  }
   const [x0, y0, x1, y1] = o.frame;
   const rotDeg = o.rotDeg ?? 0;
-  const unit = createProjection({ lon0: (w + e) / 2, lat0: (s + n) / 2, cx: 0, cy: 0, scale: 1, rotDeg });
+  const rawLon0 = (w + eNorm) / 2;
+  const lon0 = rawLon0 > 180 ? rawLon0 - 360 : rawLon0;
+  const lat0 = (s + n) / 2;
+  const unit = createProjection({ lon0, lat0, cx: 0, cy: 0, scale: 1, rotDeg });
   let ax = Infinity, ay = Infinity, bx = -Infinity, by = -Infinity;
   for (let i = 0; i <= 16; i++) {
     const t = i / 16;
-    for (const [lon, lat] of [[w + (e - w) * t, s], [w + (e - w) * t, n], [w, s + (n - s) * t], [e, s + (n - s) * t]]) {
+    for (const [lon, lat] of [[w + (eNorm - w) * t, s], [w + (eNorm - w) * t, n], [w, s + (n - s) * t], [eNorm, s + (n - s) * t]]) {
       const [x, y] = unit(lon, lat);
       if (x < ax) ax = x;
       if (x > bx) bx = x;
@@ -148,10 +167,15 @@ function fitProjection(bbox, o = {}) {
       if (y > by) by = y;
     }
   }
-  const scale = (o.zoom ?? 1) * Math.min((x1 - x0) / (bx - ax), (y1 - y0) / (by - ay));
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (!(dx > 0) || !(dy > 0) || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+    throw new Error('Invalid bbox: projected bounding box has zero or non-finite span');
+  }
+  const scale = (o.zoom ?? 1) * Math.min((x1 - x0) / dx, (y1 - y0) / dy);
   return createProjection({
-    lon0: (w + e) / 2,
-    lat0: (s + n) / 2,
+    lon0,
+    lat0,
     cx: (x0 + x1) / 2 - ((ax + bx) / 2) * scale,
     cy: (y0 + y1) / 2 - ((ay + by) / 2) * scale,
     scale,
@@ -195,31 +219,40 @@ function drawOcean(P, { pad = 5, color = PALETTE.ocean } = {}) {
   wash(P, [rect], color, { strength: 0.82, toothAmt: 0.38 });
 }
 
-// Clip a polyline to rectangular box [x0, y0, x1, y1]; runs start and end exactly on the box edge
+// Clip an open polyline to [x0, y0, x1, y1] using Liang-Barsky; runs start and end on the box edge.
 function clipRuns(pts, x0, y0, x1, y1) {
-  const inside = ([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
-  // Point where segment a (inside) -> b (outside) leaves the box
-  const exit = (a, b) => {
-    let t = 1;
-    const dx = b[0] - a[0], dy = b[1] - a[1];
-    if (b[0] < x0) t = Math.min(t, (x0 - a[0]) / dx);
-    if (b[0] > x1) t = Math.min(t, (x1 - a[0]) / dx);
-    if (b[1] < y0) t = Math.min(t, (y0 - a[1]) / dy);
-    if (b[1] > y1) t = Math.min(t, (y1 - a[1]) / dy);
-    return [a[0] + dx * t, a[1] + dy * t];
-  };
   const runs = [];
   let cur = [];
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i], prev = pts[i - 1];
-    if (inside(p)) {
-      if (!cur.length && prev) cur.push(exit(p, prev));
-      cur.push(p);
-    } else {
-      if (cur.length) {
-        cur.push(exit(prev, p));
-        runs.push(cur);
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    let t0 = 0, t1 = 1;
+    const checks = [[-dx, a[0] - x0], [dx, x1 - a[0]], [-dy, a[1] - y0], [dy, y1 - a[1]]];
+    let ok = true;
+    for (const [p, q] of checks) {
+      if (p === 0) {
+        if (q < 0) { ok = false; break; }
+      } else {
+        const r = q / p;
+        if (p < 0) { if (r > t1) { ok = false; break; } if (r > t0) t0 = r; }
+        else { if (r < t0) { ok = false; break; } if (r < t1) t1 = r; }
       }
+    }
+    if (!ok || t0 >= t1) {
+      if (cur.length > 1) runs.push(cur);
+      cur = [];
+      continue;
+    }
+    const p0 = t0 === 0 ? a : [a[0] + dx * t0, a[1] + dy * t0];
+    const p1 = t1 === 1 ? b : [a[0] + dx * t1, a[1] + dy * t1];
+    if (t0 === 0 && cur.length) {
+      cur.push(p1);
+    } else {
+      if (cur.length > 1) runs.push(cur);
+      cur = [p0, p1];
+    }
+    if (t1 < 1) {
+      if (cur.length > 1) runs.push(cur);
       cur = [];
     }
   }
@@ -310,6 +343,95 @@ function geoRings(P, proj, polygons, o = {}) {
       }
       ring = simplifyRing(ring, o.simplify ?? 0.12);
       out.push(o.smooth === false || ring.length < 4 ? ring : D.curve(ring, true, o.step ?? 0.3));
+    }
+  }
+  return out;
+}
+
+// Drop vertices closer than `tol` mm to the line between their kept neighbours (open-polyline Douglas–Peucker)
+function simplifyLine(pts, tol) {
+  const n = pts.length;
+  if (n < 3 || !(tol > 0)) return pts;
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  const tol2 = tol * tol;
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    const a = pts[i0], b = pts[i1];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy;
+    let worst = -1, worstD = tol2;
+    for (let i = i0 + 1; i < i1; i++) {
+      const p = pts[i];
+      const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+      const d = (p[0] - a[0] - t * dx) ** 2 + (p[1] - a[1] - t * dy) ** 2;
+      if (d > worstD) { worstD = d; worst = i; }
+    }
+    if (worst > 0) {
+      keep[worst] = 1;
+      stack.push([i0, worst], [worst, i1]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+// Unwrap consecutive >180° longitude jumps along an open polyline so antimeridian crossings stay continuous.
+function unwrapLine(line) {
+  const out = [];
+  let prev = null;
+  for (let i = 0; i < line.length; i++) {
+    const pt = line[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    let lon = pt[0];
+    const lat = pt[1];
+    if (typeof lon !== 'number' || !Number.isFinite(lon) || typeof lat !== 'number' || !Number.isFinite(lat)) {
+      continue;
+    }
+    if (prev !== null) {
+      const d = lon - prev;
+      if (d > 180 || d < -180) {
+        lon -= Math.round(d / 360) * 360;
+      }
+    }
+    out.push([lon, lat]);
+    prev = lon;
+  }
+  return out;
+}
+
+// Project (lon, lat) open polylines to hand-drawable mm polylines.
+// Clipped to sheet frame via clipRuns, simplified, smoothed, and stubs shorter than `minLen` mm dropped.
+function geoLines(P, proj, lines, o) {
+  const opts = o || {};
+  const m = opts.margin ?? 12;
+  const [x0, y0, x1, y1] = opts.frame || [-m, -m, P.w + m, P.h + m];
+  const minLen = opts.minLen ?? 1.5;
+  const out = [];
+  for (const line of lines || []) {
+    if (!line || line.length < 2) continue;
+    const unwrapped = unwrapLine(line);
+    if (unwrapped.length < 2) continue;
+    let projected;
+    if (proj.ring) {
+      projected = proj.ring(unwrapped);
+    } else {
+      const lon0 = Number.isFinite(proj.lon0) ? proj.lon0 : proj.params?.lon0;
+      if (Number.isFinite(lon0)) {
+        let lo = Infinity, hi = -Infinity;
+        for (const [lon] of unwrapped) {
+          if (lon < lo) lo = lon;
+          if (lon > hi) hi = lon;
+        }
+        const shift = Math.round((lon0 - (lo + hi) / 2) / 360) * 360;
+        projected = proj.pts(shift ? unwrapped.map(([lon, lat]) => [lon + shift, lat]) : unwrapped);
+      } else {
+        projected = proj.pts(unwrapped);
+      }
+    }
+    for (let run of clipRuns(projected, x0, y0, x1, y1)) {
+      if (run.length < 2 || D.polyLen(run) < minLen) continue;
+      run = simplifyLine(run, opts.simplify ?? 0.12);
+      out.push(opts.smooth === false || run.length < 3 ? run : D.curve(run, false, opts.step ?? 0.35));
     }
   }
   return out;
@@ -820,8 +942,11 @@ module.exports = {
   createProjection,
   fitProjection,
   geoRings,
+  geoLines,
   clipRing,
+  clipRuns,
   simplifyRing,
+  simplifyLine,
   drawOcean,
   drawGraticule,
   drawCoastWaterlines,
