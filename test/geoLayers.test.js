@@ -747,5 +747,62 @@ test('regression: fitProjection handles wrapped antimeridian bboxes and rejects 
   assert.throws(() => M.fitProjection([10, 20, 10, 25], { frame }), isInvalidBBoxErr);
 });
 
+test('regression: composite macro-region mainBBox unions all constituent parts and fits cleanly inside sheet', () => {
+  const tuscanyRes = API.resolveRegion({ country: 'Italy', admin1: 'Tuscany' });
+  assert.equal(tuscanyRes.kind, 'admin1');
+  assert.equal(tuscanyRes.feature.id, 'ITA:Toscana');
+  assert.equal(tuscanyRes.feature.parts.length, 10);
+  assert.deepEqual(tuscanyRes.mainBBox, tuscanyRes.bbox);
+
+  const [tw, ts, te, tn] = tuscanyRes.mainBBox;
+  assert.ok(tw <= 9.7 && ts <= 42.35 && te >= 12.35 && tn >= 44.45, `unexpected Tuscany mainBBox ${tuscanyRes.mainBBox}`);
+
+  for (const part of tuscanyRes.feature.parts) {
+    const [pw, ps, pe, pn] = part.mainBBox;
+    assert.ok(
+      pw >= tw && pe <= te && ps >= ts && pn <= tn,
+      `Tuscany part ${part.id} mainBBox ${part.mainBBox} outside composite mainBBox ${tuscanyRes.mainBBox}`,
+    );
+  }
+
+  const map = API.createMap({ w: 300, h: 200, ppm: 2, seed: 'tuscany-fit' });
+  const proj = map.fitProjection({ country: 'Italy', admin1: 'Tuscany' });
+  for (const part of tuscanyRes.feature.parts) {
+    const [pw, ps, pe, pn] = part.mainBBox;
+    const pts = [
+      [(pw + pe) / 2, (ps + pn) / 2],
+      [pw, ps],
+      [pe, pn],
+    ];
+    for (const [lon, lat] of pts) {
+      const [x, y] = proj(lon, lat);
+      assert.ok(x >= 0 && x <= 300, `part ${part.id} x=${x} outside 300 mm sheet`);
+      assert.ok(y >= 0 && y <= 200, `part ${part.id} y=${y} outside 200 mm sheet`);
+    }
+  }
+
+  for (const target of [
+    { country: 'Italy', admin1: 'Piemonte' },
+    { country: 'France', admin1: 'Brittany' },
+    { country: 'Italy', admin1: 'Emilia-Romagna' },
+    { country: 'Italy', admin1: 'Lombardy' },
+  ]) {
+    const res = API.resolveRegion(target);
+    const [cw, cs, ce, cn] = res.mainBBox;
+    assert.ok(res.feature.parts.length >= 4);
+    for (const part of res.feature.parts) {
+      const [pw, ps, pe, pn] = part.mainBBox;
+      assert.ok(
+        pw >= cw && pe <= ce && ps >= cs && pn <= cn,
+        `${res.feature.id} part ${part.id} mainBBox ${part.mainBBox} outside ${res.mainBBox}`,
+      );
+    }
+  }
+
+  // Antimeridian-straddling composite wraps cleanly across ±180° instead of spanning ~357°
+  const nzlOut = API.resolveRegion({ country: 'NZL', admin1: 'New Zealand Outlying Islands' });
+  assert.ok(nzlOut.mainBBox[0] > 160 && nzlOut.mainBBox[2] < -170, `expected wrapped antimeridian mainBBox, got ${nzlOut.mainBBox}`);
+});
+
 
 

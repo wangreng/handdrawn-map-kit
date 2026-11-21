@@ -402,6 +402,41 @@ function indexAdmin1(raw, label) {
   const byRegionGroup = new Map(); // global norm(region) & shared aliases -> composite
   const byCountryRegionGroup = new Map(); // adm0 -> Map<key, composite>
   const composites = [];
+  const unionPartMainBBoxes = (parts, fallbackBBox) => {
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    let sw = Infinity, se = -Infinity;
+    let count = 0;
+    let canWrap = true;
+    for (const part of parts) {
+      if (!part || !isValidBBox(part.mainBBox)) continue;
+      const [pw, ps, pe, pn] = part.mainBBox;
+      if (pw < w) w = pw;
+      if (ps < s) s = ps;
+      if (pe > e) e = pe;
+      if (pn > n) n = pn;
+      if (pw <= pe) {
+        const spw = pw < 0 ? pw + 360 : pw;
+        const spe = pe < 0 ? pe + 360 : pe;
+        if (spw <= spe) {
+          if (spw < sw) sw = spw;
+          if (spe > se) se = spe;
+        } else {
+          canWrap = false;
+        }
+      } else {
+        canWrap = false;
+      }
+      count++;
+    }
+    if (!count) return fallbackBBox;
+    if (canWrap && e - w > 180 && se - sw < e - w) {
+      const ww = sw > 180 ? sw - 360 : sw;
+      const we = se > 180 ? se - 360 : se;
+      return [ww, s, we, n];
+    }
+    return [w, s, e, n];
+  };
+
   for (const { adm0, region, rk, parts } of groupBuckets.values()) {
     const polygons = parts.flatMap((p) => p.polygons);
     // For multi-part macro-regions, compute aliases shared across ALL constituent parts
@@ -426,6 +461,7 @@ function indexAdmin1(raw, label) {
       sharedKeys = [...firstMap.keys()];
       sharedNames.push(...firstMap.values());
     }
+    const bbox = bboxOf(polygons);
     const composite = {
       id: `${adm0}:${region}`,
       iso: null,
@@ -437,8 +473,8 @@ function indexAdmin1(raw, label) {
       region,
       type: 'Region',
       polygons,
-      bbox: bboxOf(polygons),
-      mainBBox: mainBBoxOf(polygons),
+      bbox,
+      mainBBox: unionPartMainBBoxes(parts, bbox),
       parts,
     };
     composites.push({ adm0, rk, sharedKeys, composite });
