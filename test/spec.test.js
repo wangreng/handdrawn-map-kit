@@ -254,3 +254,44 @@ test('renderSpec preserves geo.land color alignment when an earlier entry has < 
   await renderSpec(withDegenerate).save(outDegen);
   assert.ok(fs.readFileSync(outClean).equals(fs.readFileSync(outDegen)), 'degenerate geo.land entry must not shift subsequent polygon colors');
 });
+
+test('validateSpec rejects non-enumerable EL metadata exports as element types', () => {
+  for (const forbiddenType of ['ELEMENT_BOUNDS', 'ELEMENT_META', 'elementBBox']) {
+    const res = validateSpec({
+      schemaVersion: 1,
+      canvas: { w: 100, h: 80, ppm: 2 },
+      geo: { fit: { target: 'KOR' } },
+      elements: [{ type: forbiddenType, x: 50, y: 40 }],
+    });
+    assert.equal(res.ok, false, `Expected validateSpec to reject type "${forbiddenType}"`);
+    assert.ok(
+      res.errors.some((e) => e.includes(`unknown element type "${forbiddenType}"`)),
+      `Expected unknown element type error for "${forbiddenType}", got: ${res.errors.join('; ')}`,
+    );
+  }
+});
+
+test('renderSpec renders rotatable elements train and fish with scale, angle, and options', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handdrawn-map-rotatable-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const spec = {
+    schemaVersion: 1,
+    meta: { id: 'rotatable-check', seed: 'rot-seed-1' },
+    canvas: { w: 120, h: 80, ppm: 2 },
+    geo: { fit: { target: 'KOR', margin: 5 }, focus: ['KOR'], neighbors: false },
+    elements: [
+      { id: 't1', type: 'train', x: 40, y: 40, scale: 0.8 },
+      { id: 't2', type: 'train', x: 75, y: 45, scale: 0.7, angle: 0.35, options: { color: 'accent' } },
+      { id: 'f1', type: 'fish', x: 30, y: 60, scale: 0.9, options: { color: '#4a7a99' } },
+      { id: 'f2', type: 'fish', x: 90, y: 55, scale: 1.0, angle: -0.4 },
+    ],
+  };
+
+  const out = path.join(dir, 'rotatable.png');
+  const res = renderSpec(spec);
+  await res.save(out);
+  assert.deepEqual(pngSize(out), { w: 240, h: 160 });
+  assert.equal(res.diagnostics.summary.totalItems, 4);
+});
+
