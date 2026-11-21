@@ -1,0 +1,136 @@
+schemaVersion: 1
+
+meta:
+  id: sichuan-cultural
+  title: 四川省 · SICHUAN
+  lang: zh
+  seed: sichuan-atlas-1
+
+canvas:
+  w: 300
+  h: 200
+  ppm: 10
+  paper: hotpress
+  border: true
+
+style:
+  palette:
+    ocean: '#c9dfea'
+    land: '#efe2c3'
+    neighborLand: '#e2dac6'
+    river: '#4f8cb0'
+
+geo:
+  fit:
+    target:
+      country: China
+      admin1: Sichuan
+    margin: 12
+  focus: [China]
+  admin1:
+    country: China
+    highlight: [Sichuan]
+  waterlines: true
+
+layers:
+  graticule: true
+  rivers:
+    auto: true
+    maxRank: 6
+  lakes:
+    auto: true
+  mountains:
+    auto: true
+    scale: 0.85
+  routes:
+    - pts: [[104.06, 30.67], [103.77, 29.57], [106.55, 29.56]]
+
+elements:
+  - id: el-panda
+    type: panda
+    lon: 103.42
+    lat: 31.15
+    scale: 0.95
+    priority: 65
+  - id: el-pavilion
+    type: pavilion
+    lon: 103.77
+    lat: 29.57
+    scale: 0.85
+    priority: 60
+  - id: el-lantern
+    type: lantern
+    lon: 104.74
+    lat: 31.47
+    scale: 0.9
+    priority: 55
+  - id: el-teapot
+    type: teapot
+    lon: 105.05
+    lat: 30.15
+    scale: 0.85
+    priority: 55
+  - id: el-sanxingdui
+    type: svg
+    lon: 104.22
+    lat: 31.00
+    options:
+      width: 14
+      fillStyle: pencil
+    svg: '<svg viewBox="0 0 32 24"><path d="M4,4 L28,4 L26,20 L16,23 L6,20 Z" fill="#8fa889" stroke="#2c3e2e" stroke-width="1.5"/><circle cx="11" cy="11" r="2.6" fill="#d9b44a" stroke="#2c3e2e"/><circle cx="21" cy="11" r="2.6" fill="#d9b44a" stroke="#2c3e2e"/><path d="M10,17 Q16,19.5 22,17" fill="none" stroke="#2c3e2e" stroke-width="1.4"/></svg>'
+    priority: 62
+
+labels:
+  - id: lbl-chengdu
+    text: 成都
+    subtext: Chengdu
+    lon: 104.06
+    lat: 30.67
+    size: 4.0
+    priority: 85
+  - id: lbl-chongqing
+    text: 重庆
+    subtext: Chongqing
+    lon: 106.55
+    lat: 29.56
+    size: 3.6
+    priority: 80
+  - id: lbl-leshan
+    text: 乐山
+    subtext: Leshan
+    lon: 103.77
+    lat: 29.57
+    size: 3.0
+    priority: 70
+  - id: lbl-basin
+    kind: region
+    text: 四川盆地
+    subtext: Sichuan Basin
+    lon: 105.35
+    lat: 30.85
+    size: 3.2
+    angle: -8
+    priority: 50
+
+compass:
+  placement: auto
+  r: 7.5
+
+cartouche:
+  placement: auto
+  w: 78
+  h: 42
+  country: 四川省
+  subtitle: SICHUAN · 天府之国
+  flag: CHN
+  lang: zh
+  capital: 成都 Chengdu
+  language: 中文 (四川话)
+  facts:
+    - "地貌: 盆地与横断山脉"
+    - "名胜: 三星堆 · 乐山大佛"
+
+layout:
+  autoPlace: true
+  avoidOverlap: true
+  padding: 1.5

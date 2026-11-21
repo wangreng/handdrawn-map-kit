@@ -31,7 +31,8 @@
     "demo:korea:hd": "node examples/korea_cultural_map.js",
     "build:data": "node scripts/build-natural-earth.js",
     "lint": "eslint .",
-    "test": "node --test"
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node --test test/e2e/*.e2e.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.0.13",

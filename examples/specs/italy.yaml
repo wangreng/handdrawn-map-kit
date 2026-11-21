@@ -1,0 +1,150 @@
+schemaVersion: 1
+
+meta:
+  id: italy-cultural
+  title: ITALIA
+  lang: en
+  seed: italy-atlas-1
+
+canvas:
+  w: 300
+  h: 200
+  ppm: 10
+  paper: hotpress
+  border: true
+
+style:
+  palette:
+    ocean: '#c9dfea'
+    land: '#efe2c3'
+    neighborLand: '#e2dac6'
+    river: '#4f8cb0'
+
+geo:
+  fit:
+    target: Italy
+    margin: 10
+  focus: [Italy]
+  admin1:
+    country: Italy
+  waterlines: true
+
+layers:
+  graticule: true
+  rivers:
+    auto: true
+    maxRank: 6
+  lakes:
+    auto: true
+  mountains:
+    auto: true
+    scale: 0.8
+  routes:
+    - pts: [[9.19, 45.46], [11.25, 43.77], [12.49, 41.90], [14.27, 40.85]]
+  waves:
+    - { x: 45, y: 125, scale: 1.0, count: 2 }
+    - { x: 240, y: 135, scale: 0.9, count: 2 }
+
+elements:
+  - id: el-cathedral
+    type: cathedral
+    lon: 11.25
+    lat: 43.77
+    scale: 0.85
+    priority: 65
+  - id: el-vineyard
+    type: vineyard
+    lon: 11.35
+    lat: 43.10
+    scale: 0.9
+    priority: 55
+  - id: el-cheesewine
+    type: cheeseWine
+    lon: 10.33
+    lat: 44.80
+    scale: 0.85
+    priority: 55
+  - id: el-romanarch
+    type: romanArch
+    lon: 14.27
+    lat: 40.85
+    scale: 0.8
+    priority: 60
+  - id: el-colosseum
+    type: svg
+    lon: 12.49
+    lat: 41.89
+    options:
+      width: 14
+      fillStyle: pencil
+    svg: '<svg viewBox="0 0 36 22"><rect x="3" y="6" width="30" height="14" rx="2" fill="#d9c6a5" stroke="#3c2f2f" stroke-width="1.3"/><path d="M8,20 L8,13 A3,3 0 0,1 14,13 L14,20 M16,20 L16,13 A3,3 0 0,1 22,13 L22,20 M24,20 L24,13 A3,3 0 0,1 30,13 L30,20" fill="none" stroke="#3c2f2f" stroke-width="1.1"/></svg>'
+    priority: 68
+
+labels:
+  - id: lbl-roma
+    text: Roma
+    lon: 12.496
+    lat: 41.902
+    size: 4.0
+    priority: 85
+  - id: lbl-firenze
+    text: Firenze
+    lon: 11.255
+    lat: 43.769
+    size: 3.2
+    priority: 75
+  - id: lbl-venezia
+    text: Venezia
+    lon: 12.315
+    lat: 45.441
+    size: 3.2
+    priority: 75
+  - id: lbl-milano
+    text: Milano
+    lon: 9.19
+    lat: 45.464
+    size: 3.2
+    priority: 75
+  - id: lbl-forli
+    text: Forlì
+    lon: 12.04
+    lat: 44.22
+    size: 2.6
+    priority: 60
+  - id: lbl-tyrrhenian
+    kind: sea
+    text: MARE TIRRENO
+    x: 92
+    y: 138
+    size: 3.4
+    priority: 50
+  - id: lbl-adriatic
+    kind: sea
+    text: MARE ADRIATICO
+    x: 215
+    y: 92
+    size: 3.2
+    angle: 35
+    priority: 50
+
+compass:
+  placement: auto
+  r: 7.5
+
+cartouche:
+  placement: auto
+  w: 78
+  h: 40
+  country: ITALIA
+  subtitle: Cultural & Culinary Atlas
+  flag: ITA
+  capital: Roma
+  language: Italiano
+  facts:
+    - "Rivers: Po · Tiber · Arno"
+    - "Highlights: Colosseum · Tuscany"
+
+layout:
+  autoPlace: true
+  avoidOverlap: true
+  padding: 1.5

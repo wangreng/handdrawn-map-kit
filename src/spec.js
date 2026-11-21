@@ -8,6 +8,7 @@ const { PAPERS } = require('../engine/kit/paper');
 const { POSES } = require('../engine/lib/people');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
+const SVG = require('./svgDraw');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
 const {
@@ -147,6 +148,36 @@ function isFiniteNum(v) {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
+function normalizeSvgInput(svg) {
+  if (Array.isArray(svg)) return { paths: svg };
+  return svg;
+}
+
+function registerSpecFonts(spec, baseDir) {
+  if (!spec || !isPlainObject(spec.style)) return;
+  const { font, fonts } = spec.style;
+
+  if (Array.isArray(fonts)) {
+    for (const f of fonts) {
+      if (isPlainObject(f) && typeof f.name === 'string' && typeof f.path === 'string') {
+        Lt.registerFont(f.name, resolveGeoSource(f.path, baseDir), f);
+      }
+    }
+  } else if (isPlainObject(fonts)) {
+    for (const [name, val] of Object.entries(fonts)) {
+      if (typeof val === 'string') {
+        Lt.registerFont(name, resolveGeoSource(val, baseDir));
+      } else if (isPlainObject(val) && typeof val.path === 'string') {
+        Lt.registerFont(name, resolveGeoSource(val.path, baseDir), val);
+      }
+    }
+  }
+
+  if (isPlainObject(font) && typeof font.path === 'string') {
+    Lt.registerFont(font.name || 'custom', resolveGeoSource(font.path, baseDir), font);
+  }
+}
+
 function validateSpec(inputSpec, opts = {}) {
   const errors = [];
   const warnings = [];
@@ -170,9 +201,9 @@ function validateSpec(inputSpec, opts = {}) {
     }
   }
 
-  // schemaVersion
-  if (spec.schemaVersion === undefined) {
-    spec.schemaVersion = 1;
+  // schemaVersion (required: must be 1)
+  if (spec.schemaVersion === undefined || spec.schemaVersion === null) {
+    errors.push('Missing required "schemaVersion" (expected 1).');
   } else if (spec.schemaVersion !== 1) {
     errors.push(`Unsupported schemaVersion "${spec.schemaVersion}" (expected 1).`);
   }
@@ -227,6 +258,34 @@ function validateSpec(inputSpec, opts = {}) {
   if (spec.style.palette !== undefined && !isPlainObject(spec.style.palette)) {
     errors.push('style.palette must be an object mapping color names to hex strings.');
   }
+  if (isPlainObject(spec.style.font) && typeof spec.style.font.path === 'string') {
+    const fp = path.resolve(resolveGeoSource(spec.style.font.path, baseDir));
+    if (!fs.existsSync(fp)) {
+      errors.push(`style.font file not found: "${spec.style.font.path}".`);
+    }
+  }
+  if (Array.isArray(spec.style.fonts)) {
+    spec.style.fonts.forEach((f, idx) => {
+      if (isPlainObject(f) && typeof f.path === 'string') {
+        const fp = path.resolve(resolveGeoSource(f.path, baseDir));
+        if (!fs.existsSync(fp)) {
+          errors.push(`style.fonts[${idx}] file not found: "${f.path}".`);
+        }
+      }
+    });
+  } else if (isPlainObject(spec.style.fonts)) {
+    for (const [name, val] of Object.entries(spec.style.fonts)) {
+      const rawPath = typeof val === 'string'
+        ? val
+        : (isPlainObject(val) && typeof val.path === 'string' ? val.path : null);
+      if (rawPath) {
+        const fp = path.resolve(resolveGeoSource(rawPath, baseDir));
+        if (!fs.existsSync(fp)) {
+          errors.push(`style.fonts.${name} file not found: "${rawPath}".`);
+        }
+      }
+    }
+  }
 
   // geo
   if (spec.geo !== undefined) {
@@ -242,17 +301,14 @@ function validateSpec(inputSpec, opts = {}) {
           if (t === undefined || t === null) {
             errors.push('geo.fit.target is required.');
           } else if (Array.isArray(t)) {
-            if (t.length !== 4 || !t.every(isFiniteNum) || t[0] >= t[2] || t[1] >= t[3]) {
-              errors.push('geo.fit.target bbox must be [west, south, east, north] with west < east and south < north.');
+            if (t.length !== 4 || !t.every(isFiniteNum) || t[0] === t[2] || t[1] >= t[3]) {
+              errors.push('geo.fit.target bbox must be [west, south, east, north] with west !== east and south < north.');
             }
-          } else if (typeof t === 'string') {
-            if (!GEO.findCountry(t, geoSource)) {
-              errors.push(`Unknown country "${t}" in geo.fit.target.`);
-            }
-          } else if (isPlainObject(t)) {
-            // PR 2 extension slot: { country, admin1 }
-            if (t.country && typeof t.country === 'string' && !GEO.findCountry(t.country, geoSource)) {
-              errors.push(`Unknown country "${t.country}" in geo.fit.target.country.`);
+          } else if (typeof t === 'string' || isPlainObject(t)) {
+            try {
+              GEO.resolveRegion(t, { countrySource: geoSource });
+            } catch (err) {
+              errors.push(`Invalid geo.fit.target: ${err.message}`);
             }
           } else {
             errors.push('geo.fit.target must be a country code/name, [w,s,e,n] bbox, or { country, admin1 } object.');
@@ -285,6 +341,47 @@ function validateSpec(inputSpec, opts = {}) {
             errors.push('geo.neighbors array entries must be country code/name strings.');
           } else if (!GEO.findCountry(id, geoSource)) {
             errors.push(`Unknown country "${id}" in geo.neighbors.`);
+          }
+        }
+      }
+      if (spec.geo.admin1 !== undefined && typeof spec.geo.admin1 !== 'boolean') {
+        if (!isPlainObject(spec.geo.admin1)) {
+          errors.push('geo.admin1 must be a boolean or configuration object.');
+        } else {
+          const a1 = spec.geo.admin1;
+          const a1Source = resolveGeoSource(a1.source, baseDir);
+          let a1Country = a1.country;
+          let a1CountryValid = true;
+          if (a1Country !== undefined && typeof a1Country === 'string') {
+            const foundCountry = GEO.findCountry(a1Country, geoSource);
+            if (!foundCountry) {
+              errors.push(`Unknown country "${a1Country}" in geo.admin1.country.`);
+              a1CountryValid = false;
+            } else {
+              a1Country = foundCountry.id;
+            }
+          } else if (a1Country === undefined) {
+            const t = spec.geo.fit?.target;
+            if (isPlainObject(t) && typeof t.country === 'string') {
+              a1Country = GEO.findCountry(t.country, geoSource)?.id ?? t.country;
+            } else if (typeof t === 'string') {
+              const foundCountry = GEO.findCountry(t, geoSource);
+              if (foundCountry) a1Country = foundCountry.id;
+            }
+          }
+          if (a1CountryValid) {
+            for (const field of ['focus', 'highlight', 'neighbors']) {
+              const rawVal = a1[field];
+              if (rawVal === undefined || typeof rawVal === 'boolean') continue;
+              const list = Array.isArray(rawVal) ? rawVal : [rawVal];
+              for (const id of list) {
+                if (typeof id !== 'string') {
+                  errors.push(`geo.admin1.${field} entries must be admin-1 code/name strings.`);
+                } else if (!GEO.findAdmin1(id, { country: a1Country, source: a1Source })) {
+                  errors.push(`Unknown admin-1 region "${id}" in geo.admin1.${field}.`);
+                }
+              }
+            }
           }
         }
       }
@@ -321,7 +418,12 @@ function validateSpec(inputSpec, opts = {}) {
           return;
         }
         if (el.type === 'svg') {
-          if (!el.svg) errors.push(`elements[${idx}] with type "svg" requires an "svg" field.`);
+          const validSvg = typeof el.svg === 'string'
+            ? el.svg.length > 0
+            : (isPlainObject(el.svg) || Array.isArray(el.svg));
+          if (!validSvg) {
+            errors.push(`elements[${idx}] with type "svg" requires an "svg" string, object, or path array.`);
+          }
         } else if (el.type === 'person') {
           if (el.options && typeof el.options.pose === 'string' && !Object.hasOwn(POSES, el.options.pose)) {
             warnings.push(`elements[${idx}] references unknown person pose "${el.options.pose}"; falling back to "stand".`);
@@ -358,10 +460,11 @@ function validateSpec(inputSpec, opts = {}) {
         }
         const hasXY = isFiniteNum(lbl.x) && isFiniteNum(lbl.y);
         const hasGeo = isFiniteNum(lbl.lon) && isFiniteNum(lbl.lat);
+        const hasPlace = typeof lbl.place === 'string' && lbl.place.length > 0;
         const hasPath = Array.isArray(lbl.path) && lbl.path.length >= 2;
         const isAuto = lbl.placement === 'auto';
-        if (!hasXY && !hasGeo && !hasPath && !isAuto) {
-          errors.push(`labels[${idx}] ("${lbl.text || ''}") must specify (x, y), (lon, lat), path, or placement: "auto".`);
+        if (!hasXY && !hasGeo && !hasPlace && !hasPath && !isAuto) {
+          errors.push(`labels[${idx}] ("${lbl.text || ''}") must specify (x, y), (lon, lat), place, path, or placement: "auto".`);
         }
       });
     }
@@ -438,6 +541,10 @@ function validateSpec(inputSpec, opts = {}) {
 
   // layout
   spec.layout = isPlainObject(spec.layout) ? spec.layout : {};
+  if (opts.autoLayout) {
+    spec.layout.autoPlace = true;
+    spec.layout.avoidOverlap = true;
+  }
   if (spec.layout.gridStep !== undefined && (!isFiniteNum(spec.layout.gridStep) || spec.layout.gridStep <= 0)) {
     errors.push('layout.gridStep must be a positive number.');
   }
@@ -465,7 +572,22 @@ function resolveColor(val, pal) {
   return val;
 }
 
-function resolvePoint(item, proj, idPositions) {
+function getGeoContext(spec) {
+  const ctx = {};
+  const t = spec.geo && spec.geo.fit && spec.geo.fit.target;
+  if (typeof t === 'string') {
+    if (GEO.findCountry(t)) ctx.country = t;
+  } else if (isPlainObject(t)) {
+    if (typeof t.country === 'string') ctx.country = t.country;
+    if (typeof t.admin1 === 'string') ctx.admin1 = t.admin1;
+  }
+  if (!ctx.country && spec.geo && isPlainObject(spec.geo.admin1) && typeof spec.geo.admin1.country === 'string') {
+    ctx.country = spec.geo.admin1.country;
+  }
+  return ctx;
+}
+
+function resolvePoint(item, proj, idPositions, geoContext, warnings) {
   if (typeof item === 'string') {
     return idPositions && idPositions.get(item) ? idPositions.get(item) : null;
   }
@@ -480,6 +602,24 @@ function resolvePoint(item, proj, idPositions) {
     const [px, py] = proj(item.lon, item.lat);
     return [px + dx, py + dy];
   }
+  if (typeof item.place === 'string' && item.place.length > 0 && proj) {
+    const country = item.country || (geoContext && geoContext.country);
+    const admin1 = item.admin1 || (geoContext && geoContext.admin1);
+    let place = GEO.findPlace(item.place, { country, admin1 });
+    if (!place && !item.admin1 && country) {
+      place = GEO.findPlace(item.place, { country });
+    }
+    if (!place && !item.country && !item.admin1) {
+      place = GEO.findPlace(item.place);
+    }
+    if (place) {
+      const [px, py] = proj(place.lon, place.lat);
+      return [px + dx, py + dy];
+    }
+    if (Array.isArray(warnings)) {
+      warnings.push(`Unknown place "${item.place}" could not be resolved and was skipped.`);
+    }
+  }
   if (isFiniteNum(item.x) && isFiniteNum(item.y)) {
     return [item.x + dx, item.y + dy];
   }
@@ -489,9 +629,16 @@ function resolvePoint(item, proj, idPositions) {
   return null;
 }
 
-function resolvePathPoints(entry, proj) {
+function resolvePathPoints(entry, proj, defaultGeo = false) {
   const rawPts = Array.isArray(entry) ? entry : (entry.pts || entry.points || entry.geoPts || []);
-  const isGeo = !Array.isArray(entry) && (entry.coords === 'geo' || Boolean(entry.geoPts));
+  const explicitCoords = !Array.isArray(entry) ? entry.coords : undefined;
+  let isGeo = explicitCoords === 'geo' || (!Array.isArray(entry) && Boolean(entry.geoPts));
+  if (!isGeo && explicitCoords === undefined && defaultGeo && proj && rawPts.length > 0) {
+    const allNumPairs = rawPts.every((p) => Array.isArray(p) && p.length >= 2 && isFiniteNum(p[0]) && isFiniteNum(p[1]));
+    if (allNumPairs && rawPts.every((p) => Math.abs(p[0]) <= 180 && Math.abs(p[1]) <= 90)) {
+      isGeo = true;
+    }
+  }
   const out = [];
   for (const pt of rawPts) {
     if (Array.isArray(pt) && pt.length >= 2) {
@@ -506,16 +653,25 @@ function resolvePathPoints(entry, proj) {
 }
 
 function estimateTextBBox(text, x, y, o = {}) {
-  const face = o.face || 'serif-bold';
-  const size = o.size || 2.6;
-  const spacing = o.spacing || 0;
-  const slant = o.slant || 0;
-  const w = Lt.measure(text, face, size, spacing);
-  const h = size;
-  const alignOff = o.align === 'center' ? w / 2 : o.align === 'right' ? w : 0;
-  const x0 = x - alignOff - size * slant * 0.62;
-  const y0 = y - size;
-  return normalizeBBox(x0, y0, w, h);
+  const mb = Lt.measureBox(text, {
+    x,
+    y,
+    face: o.face || 'serif-bold',
+    size: o.size || 2.6,
+    spacing: o.spacing || 0,
+    slant: o.slant || 0,
+    align: o.align || 'left',
+    angle: o.angle,
+    rotateDeg: o.rotateDeg,
+    sub: o.sub ?? o.subtext,
+    bilingualLayout: o.bilingualLayout,
+    layout: o.layout,
+    secondarySize: o.secondarySize ?? o.subSize,
+    secondaryFace: o.secondaryFace ?? o.subFace,
+    gap: o.gap,
+    sep: o.sep,
+  });
+  return normalizeBBox(mb.x0, mb.y0, mb.w, mb.h);
 }
 
 function bboxFromWrite(b) {
@@ -529,15 +685,8 @@ function buildProjection(geo, canvas, baseDir) {
 
   if (geo.fit && geo.fit.target !== undefined) {
     const t = geo.fit.target;
-    let bbox = null;
-    if (Array.isArray(t)) {
-      bbox = t;
-    } else if (typeof t === 'string') {
-      bbox = GEO.getCountry(t, source).mainBBox;
-    } else if (isPlainObject(t) && typeof t.country === 'string') {
-      // PR 2 extension slot fallback: fit to country until PR 5 wires admin1
-      bbox = GEO.getCountry(t.country, source).mainBBox;
-    }
+    const resolved = GEO.resolveRegion(t, { countrySource: source });
+    const bbox = geo.fit.fullBBox ? resolved.bbox : resolved.mainBBox;
     if (bbox) {
       const m = inner + (geo.fit.margin ?? 6);
       const frame = geo.fit.frame || [m, m, w - m, h - m];
@@ -564,7 +713,50 @@ function buildProjection(geo, canvas, baseDir) {
   return null;
 }
 
-function collectGeoRingsPure(proj, geo, canvas, baseDir) {
+function normalizeAdmin1Opts(geo, pal, baseDir, hasCountryFocus) {
+  if (!geo || !geo.admin1) return null;
+  const raw = geo.admin1 === true ? {} : { ...geo.admin1 };
+  const targetCountry = isPlainObject(geo.fit?.target) && typeof geo.fit.target.country === 'string'
+    ? geo.fit.target.country
+    : (typeof geo.fit?.target === 'string' && GEO.findCountry(geo.fit.target) ? geo.fit.target : undefined);
+  const country = raw.country ?? targetCountry;
+  const focus = raw.focus ?? raw.highlight ?? [];
+  const focusArr = Array.isArray(focus) ? focus : (focus ? [focus] : []);
+  const source = resolveGeoSource(raw.source, baseDir);
+
+  const opts = {
+    country,
+    focus: focusArr,
+    neighbors: raw.neighbors,
+    source,
+    bbox: raw.bbox,
+    bordersOnly: raw.bordersOnly ?? (focusArr.length === 0 && !raw.fill),
+    fill: typeof raw.fill === 'string' ? resolveColor(raw.fill, pal) : raw.fill,
+    color: Array.isArray(raw.color)
+      ? raw.color.map((c) => resolveColor(c, pal))
+      : resolveColor(raw.color || geo.color || pal.land, pal),
+    neighborColor: resolveColor(raw.neighborColor || geo.neighborColor || pal.neighborLand, pal),
+    borderColor: resolveColor(raw.borderColor || '#7d7365', pal),
+    outlineColor: raw.outlineColor ? resolveColor(raw.outlineColor, pal) : undefined,
+    borderNib: raw.borderNib,
+    neighborNib: raw.neighborNib,
+    nib: raw.nib,
+  };
+
+  if (raw.waterlines !== undefined) {
+    opts.waterlines = isPlainObject(raw.waterlines)
+      ? { ...raw.waterlines, shallowColor: resolveColor(raw.waterlines.shallowColor || pal.oceanShallow, pal) }
+      : raw.waterlines;
+  } else if (!hasCountryFocus && !opts.bordersOnly && geo.waterlines !== false) {
+    opts.waterlines = isPlainObject(geo.waterlines)
+      ? { ...geo.waterlines, shallowColor: resolveColor(geo.waterlines.shallowColor || pal.oceanShallow, pal) }
+      : { shallowColor: pal.oceanShallow };
+  }
+
+  return opts;
+}
+
+function collectGeoRingsPure(proj, geo, canvas, baseDir, pal) {
   if (!proj || !geo) return [];
   const source = resolveGeoSource(geo.fit?.source ?? geo.source, baseDir);
   const stubP = { w: canvas.w, h: canvas.h };
@@ -587,49 +779,737 @@ function collectGeoRingsPure(proj, geo, canvas, baseDir) {
   for (const c of focusCountries) {
     rings.push(...M.geoRings(stubP, proj, c.polygons, { smooth: false }));
   }
+
+  if (geo.admin1) {
+    const a1Opts = normalizeAdmin1Opts(geo, pal || M.PALETTE, baseDir, focusCountries.length > 0);
+    if (a1Opts) {
+      const a1Focus = a1Opts.focus.map((id) => GEO.getAdmin1(id, { country: a1Opts.country, source: a1Opts.source }));
+      const a1Set = new Set(a1Focus.map((r) => r.id));
+      let a1Neighbors = [];
+      if (Array.isArray(a1Opts.neighbors)) {
+        a1Neighbors = a1Opts.neighbors.map((id) => GEO.getAdmin1(id, { country: a1Opts.country, source: a1Opts.source }));
+      } else if (a1Opts.neighbors !== false) {
+        a1Neighbors = GEO.admin1InBBox(a1Opts.bbox || proj.extent([0, 0, canvas.w, canvas.h]), {
+          country: a1Opts.country,
+          source: a1Opts.source,
+        });
+      }
+      for (const r of a1Neighbors) {
+        if (a1Set.has(r.id)) continue;
+        rings.push(...M.geoRings(stubP, proj, r.polygons, { smooth: false }));
+      }
+      for (const r of a1Focus) {
+        rings.push(...M.geoRings(stubP, proj, r.polygons, { smooth: false }));
+      }
+    }
+  }
+
+  if (Array.isArray(geo.land)) {
+    for (const entry of geo.land) {
+      const pts = resolvePathPoints(entry, proj);
+      if (pts.length >= 3) rings.push(pts);
+    }
+  }
+
   return rings;
 }
 
-function labelDefaultsForKind(kind, pal) {
+function labelDefaultsForKind(kind, pal, defaultFace) {
+  const baseFace = defaultFace || 'serif-bold';
   if (kind === 'sea') {
-    return { face: 'serif-bold', size: 3.4, align: 'center', color: '#426a80', spacing: 0.16, slant: 0.22 };
+    return { face: baseFace, size: 3.4, align: 'center', color: '#426a80', spacing: 0.16, slant: 0.22 };
   }
   if (kind === 'region') {
-    return { face: 'serif-bold', size: 2.5, align: 'center', color: '#7a6852', spacing: 0.22, slant: 0 };
+    return { face: baseFace, size: 2.5, align: 'center', color: '#7a6852', spacing: 0.22, slant: 0 };
   }
-  return { face: 'serif-bold', size: 2.6, align: 'center', color: pal.ink, spacing: 0, slant: 0 };
+  return { face: baseFace, size: 2.6, align: 'center', color: pal.ink, spacing: 0, slant: 0 };
 }
 
-function registerCityBoxes(layout, city, idx, pt, idPositions) {
-  const id = city.id || `city-${idx + 1}`;
-  idPositions.set(id, pt);
-  const mr = city.capital ? 2.1 : 1.35;
-  layout.register({
-    id,
-    kind: 'city',
-    x: pt[0] - mr,
-    y: pt[1] - mr,
-    w: mr * 2,
-    h: mr * 2,
-    priority: city.priority ?? (city.capital ? 80 : 65),
-    layer: 'cities',
+function buildSvgOpts(el, pal) {
+  const raw = isPlainObject(el.options) ? { ...el.options } : {};
+  const out = { ...raw, palette: pal };
+  if (out.w === undefined && out.width !== undefined) out.w = out.width;
+  if (out.h === undefined && out.height !== undefined) out.h = out.height;
+  if (out.w === undefined && el.w !== undefined) out.w = el.w;
+  if (out.w === undefined && el.width !== undefined) out.w = el.width;
+  if (out.h === undefined && el.h !== undefined) out.h = el.h;
+  if (out.h === undefined && el.height !== undefined) out.h = el.height;
+  if (out.scale === undefined && el.scale !== undefined) out.scale = el.scale;
+  if (out.anchor === undefined && el.anchor !== undefined) out.anchor = el.anchor;
+  if (out.fillStyle === undefined && el.fillStyle !== undefined) out.fillStyle = el.fillStyle;
+  if (out.rot === undefined && el.angle !== undefined) out.rot = el.angle;
+  if (out.rotDeg === undefined && el.rotateDeg !== undefined) out.rotDeg = el.rotateDeg;
+  if (typeof out.defaultStroke === 'string') out.defaultStroke = resolveColor(out.defaultStroke, pal);
+  return out;
+}
+
+function resolveAutoCities(cfg, proj, canvas, effectiveInner, metaLang, geoContext) {
+  if (!proj) return [];
+  const limit = cfg.limit ?? cfg.max ?? 12;
+  const country = cfg.country ?? (geoContext && geoContext.country);
+  const admin1 = cfg.admin1;
+  const places = cfg.names
+    ? [].concat(cfg.names).map((n) => GEO.findPlace(n, { country, admin1, source: cfg.source })).filter(Boolean)
+    : GEO.placesInBBox(cfg.bbox || proj.extent([0, 0, canvas.w, canvas.h]), {
+      country,
+      admin1,
+      maxRank: cfg.maxRank,
+      minPop: cfg.minPop,
+      capitalsOnly: cfg.capitalsOnly,
+      limit,
+      source: cfg.source,
+    });
+
+  const frame = cfg.frame || [effectiveInner + 2, effectiveInner + 2, canvas.w - effectiveInner - 2, canvas.h - effectiveInner - 2];
+  const minSpacing = cfg.minSpacing ?? 0;
+  const lang = cfg.labelLang || metaLang;
+  const bilingual = Boolean(cfg.bilingual);
+
+  const out = [];
+  for (const place of places) {
+    const [x, y] = proj(place.lon, place.lat);
+    if (x < frame[0] || x > frame[2] || y < frame[1] || y > frame[3]) continue;
+    if (minSpacing > 0 && !place.capital && out.some((c) => Math.hypot(c.pt[0] - x, c.pt[1] - y) < minSpacing)) continue;
+
+    let primary = place.name;
+    let subtext;
+    if (cfg.labels === false) {
+      primary = '';
+    } else if (lang === 'zh' && place.zh) {
+      primary = place.zh;
+      if (bilingual && place.name && place.name !== primary) subtext = place.name;
+    } else if (lang === 'ja' && place.ja) {
+      primary = place.ja;
+      if (bilingual && place.name && place.name !== primary) subtext = place.name;
+    } else if (lang === 'ko' && place.ko) {
+      primary = place.ko;
+      if (bilingual && place.name && place.name !== primary) subtext = place.name;
+    } else if (bilingual) {
+      const local = place.zh || place.ja || place.ko;
+      if (local && local !== place.name) {
+        primary = local;
+        subtext = place.name;
+      }
+    }
+
+    const baseOpts = isPlainObject(cfg.cityOpts) ? cfg.cityOpts : {};
+    out.push({
+      id: `auto-city-${out.length + 1}`,
+      name: primary,
+      subtext,
+      capital: Boolean(place.capital || place.adm1Capital),
+      pt: [x, y],
+      priority: place.capital ? 78 : 58,
+      ...baseOpts,
+    });
+  }
+  return out;
+}
+
+function buildLabelDrawOpts(lbl, defs, pal) {
+  const lOpts = {};
+  if (lbl.face) lOpts.face = lbl.face;
+  else if (defs.face) lOpts.face = defs.face;
+  if (lbl.size !== undefined) lOpts.size = lbl.size;
+  if (lbl.align) lOpts.align = lbl.align;
+  if (lbl.color) lOpts.color = resolveColor(lbl.color, pal);
+  if (lbl.spacing !== undefined) lOpts.spacing = lbl.spacing;
+  if (lbl.slant !== undefined) lOpts.slant = lbl.slant;
+  if (lbl.angle !== undefined) lOpts.angle = lbl.angle;
+  if (lbl.rotateDeg !== undefined) lOpts.rotateDeg = lbl.rotateDeg;
+  if (lbl.halo !== undefined) lOpts.halo = lbl.halo;
+  if (lbl.opacity !== undefined) lOpts.opacity = lbl.opacity;
+  const sub = lbl.subtext ?? lbl.sub;
+  if (sub) lOpts.sub = sub;
+  if (lbl.bilingualLayout) lOpts.bilingualLayout = lbl.bilingualLayout;
+  if (lbl.layout) lOpts.layout = lbl.layout;
+  if (lbl.secondarySize !== undefined) lOpts.secondarySize = lbl.secondarySize;
+  if (lbl.subSize !== undefined) lOpts.subSize = lbl.subSize;
+  if (lbl.secondaryFace) lOpts.secondaryFace = lbl.secondaryFace;
+  if (lbl.subFace) lOpts.subFace = lbl.subFace;
+  if (lbl.secondaryColor) lOpts.secondaryColor = resolveColor(lbl.secondaryColor, pal);
+  if (lbl.subColor) lOpts.subColor = resolveColor(lbl.subColor, pal);
+  if (lbl.gap !== undefined) lOpts.gap = lbl.gap;
+  if (lbl.sep !== undefined) lOpts.sep = lbl.sep;
+  return lOpts;
+}
+
+function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride = null) {
+  registerSpecFonts(spec, baseDir);
+  const warnings = [];
+  const effectiveInner = spec.canvas.border ? spec.canvas.inner : 0;
+  const autoPlace = Boolean(opts.autoLayout || spec.layout.autoPlace);
+  const avoidOverlap = Boolean(opts.autoLayout || spec.layout.avoidOverlap);
+  const pad = spec.layout.padding ?? 1.0;
+  const defaultFace = typeof spec.style.font === 'string'
+    ? spec.style.font
+    : (isPlainObject(spec.style.font) && typeof spec.style.font.path === 'string'
+      ? (spec.style.font.name || 'custom')
+      : undefined);
+  const geoContext = getGeoContext(spec);
+
+  const layout = createLayout({
+    w: spec.canvas.w,
+    h: spec.canvas.h,
+    inner: effectiveInner,
+    gridStep: spec.layout.gridStep ?? 2.0,
+    padding: pad,
   });
-  if (city.name) {
+
+  const landRings = landRingsOverride || collectGeoRingsPure(proj, spec.geo, spec.canvas, baseDir, pal);
+  if (landRings.length) layout.setLandPolygons(landRings);
+
+  const idPositions = new Map();
+  const plan = {
+    layout,
+    idPositions,
+    warnings,
+    autoPlace,
+    avoidOverlap,
+    mountains: [],
+    riceFields: [],
+    waves: [],
+    cities: [],
+    elements: [],
+    labels: [],
+    insets: [],
+    compass: null,
+    cartouche: null,
+    autoCallouts: [],
+  };
+
+  // 1. Insets (fixed chrome)
+  spec.insets.forEach((ins, idx) => {
+    const id = ins.id || `inset-${idx + 1}`;
+    const item = layout.register({
+      id,
+      kind: 'inset',
+      x: ins.x,
+      y: ins.y,
+      w: ins.w,
+      h: ins.h,
+      priority: ins.priority ?? 90,
+      fixed: ins.fixed ?? true,
+      layer: 'chrome',
+    });
+    plan.insets.push({ ins, id, item });
+  });
+
+  // 2. Explicit cartouche (non-auto)
+  if (spec.cartouche && spec.cartouche.placement !== 'auto' && isFiniteNum(spec.cartouche.x) && isFiniteNum(spec.cartouche.y)) {
+    const c = spec.cartouche;
+    const id = c.id || 'cartouche';
+    const item = layout.register({
+      id,
+      kind: 'cartouche',
+      x: c.x,
+      y: c.y,
+      w: c.w + 1.4,
+      h: c.h + 1.4,
+      priority: c.priority ?? 95,
+      fixed: c.fixed ?? true,
+      layer: 'chrome',
+    });
+    plan.cartouche = { c, id, x: c.x, y: c.y, item };
+  }
+
+  // 3. Explicit compass (non-auto)
+  if (spec.compass && spec.compass.placement !== 'auto') {
+    const pt = resolvePoint(spec.compass, proj, idPositions, geoContext, warnings);
+    if (pt) {
+      const r = spec.compass.r ?? 9;
+      const id = spec.compass.id || 'compass';
+      const item = layout.register({
+        id,
+        kind: 'compass',
+        x: pt[0] - 1.65 * r,
+        y: pt[1] - 1.65 * r,
+        w: 3.3 * r,
+        h: 3.3 * r,
+        priority: spec.compass.priority ?? 85,
+        fixed: spec.compass.fixed ?? true,
+        layer: 'chrome',
+      });
+      plan.compass = { cmp: spec.compass, id, pt: [...pt], r, item };
+    }
+  }
+
+  // 4. Manual mountains, riceFields, waves
+  if (Array.isArray(spec.layers.mountains)) {
+    spec.layers.mountains.forEach((mRange, idx) => {
+      const peaks = Array.isArray(mRange) ? mRange : (mRange.peaks || []);
+      const pts = [];
+      for (const pk of peaks) {
+        if (!Array.isArray(pk) || pk.length < 4) continue;
+        const [cx, by, pw, ph] = pk;
+        pts.push([cx - pw, by - ph], [cx + pw, by]);
+      }
+      const bb = bboxFromPoints(pts);
+      const id = (!Array.isArray(mRange) && mRange.id) || `mountains-${idx + 1}`;
+      let item = null;
+      if (bb) {
+        item = layout.register({
+          id,
+          kind: 'mountain',
+          ...bb,
+          priority: 40,
+          fixed: true,
+          layer: 'terrain',
+        });
+      }
+      plan.mountains.push({ mRange, peaks, id, item });
+    });
+  }
+
+  if (Array.isArray(spec.layers.riceFields)) {
+    spec.layers.riceFields.forEach((rf, idx) => {
+      const pt = resolvePoint(rf, proj, idPositions, geoContext, warnings);
+      if (!pt) return;
+      const rw = rf.w ?? 14;
+      const rh = rf.h ?? 6;
+      const id = rf.id || `rice-${idx + 1}`;
+      layout.register({
+        id,
+        kind: 'riceFields',
+        x: pt[0] - rw / 2,
+        y: pt[1] - rh / 2,
+        w: rw,
+        h: rh,
+        priority: 30,
+        fixed: true,
+        layer: 'terrain',
+        meta: { nonBlocking: true },
+      });
+      plan.riceFields.push({ rf, id, pt, rw, rh });
+    });
+  }
+
+  if (Array.isArray(spec.layers.waves)) {
+    spec.layers.waves.forEach((wv, idx) => {
+      const pt = resolvePoint(wv, proj, idPositions, geoContext, warnings);
+      if (!pt) return;
+      const s = wv.scale ?? wv.s ?? 1;
+      const count = wv.count ?? 2;
+      const id = wv.id || `waves-${idx + 1}`;
+      layout.register({
+        id,
+        kind: 'wave',
+        x: pt[0],
+        y: pt[1] - 0.68 * s,
+        w: (12 + (count - 1) * 2) * s,
+        h: ((count - 1) * 2 + 1.36) * s,
+        priority: 20,
+        fixed: true,
+        layer: 'water',
+        meta: { nonBlocking: true },
+      });
+      plan.waves.push({ wv, id, pt, s, count });
+    });
+  }
+
+  // 5. Cities (manual array OR { auto: true, ... })
+  let cityList = [];
+  if (Array.isArray(spec.layers.cities)) {
+    spec.layers.cities.forEach((city, idx) => {
+      const pt = resolvePoint(city, proj, idPositions, geoContext, warnings);
+      if (!pt) return;
+      cityList.push({ ...city, id: city.id || `city-${idx + 1}`, pt });
+    });
+  } else if (isPlainObject(spec.layers.cities) && (spec.layers.cities.auto || spec.layers.cities.names)) {
+    cityList = resolveAutoCities(spec.layers.cities, proj, spec.canvas, effectiveInner, spec.meta.lang, geoContext);
+  }
+
+  for (const city of cityList) {
+    const { id, pt } = city;
+    idPositions.set(id, pt);
+    const mr = city.capital ? 2.1 : 1.35;
+    const dotItem = layout.register({
+      id,
+      kind: 'city',
+      x: pt[0] - mr,
+      y: pt[1] - mr,
+      w: mr * 2,
+      h: mr * 2,
+      priority: city.priority ?? (city.capital ? 80 : 65),
+      fixed: city.fixed ?? true,
+      layer: 'cities',
+    });
+
+    let labelItem = null;
     const dx = city.dx ?? 0;
     const dy = city.dy ?? -2.2;
     const size = city.size ?? (city.capital ? 3.2 : 2.3);
     const face = city.face ?? (city.capital ? 'serif-bold' : 'sans-bold');
     const align = city.align ?? 'center';
-    const tb = estimateTextBBox(city.name, pt[0] + dx, pt[1] + dy, { face, size, align });
-    layout.register({
-      id: `${id}:label`,
-      kind: 'label',
-      ...tb,
-      priority: city.priority ?? (city.capital ? 78 : 62),
-      layer: 'cities',
-      meta: { ownerId: id },
+    const sub = city.subtext ?? city.sub;
+
+    if (city.name) {
+      const tb = estimateTextBBox(city.name, pt[0] + dx, pt[1] + dy, {
+        face,
+        size,
+        align,
+        sub,
+        bilingualLayout: city.bilingualLayout,
+        layout: city.layout,
+        secondarySize: city.secondarySize ?? city.subSize,
+        secondaryFace: city.secondaryFace ?? city.subFace,
+      });
+      labelItem = layout.register({
+        id: `${id}:label`,
+        kind: 'label',
+        ...tb,
+        priority: city.priority ?? (city.capital ? 78 : 62),
+        fixed: city.labelFixed !== undefined ? Boolean(city.labelFixed) : !avoidOverlap,
+        layer: 'cities',
+        meta: { ownerId: id },
+      });
+    }
+
+    plan.cities.push({
+      city,
+      id,
+      pt: [...pt],
+      dx,
+      dy,
+      origLabelBox: labelItem ? { x: labelItem.x, y: labelItem.y } : null,
+      dotItem,
+      labelItem,
     });
   }
+
+  // 6. Elements (explicit positions first; placement: 'auto' deferred)
+  const autoElements = [];
+  spec.elements.forEach((el, idx) => {
+    const id = el.id || `el-${el.type}-${idx + 1}`;
+    if (el.placement === 'auto') {
+      autoElements.push({ el, idx, id });
+      return;
+    }
+    const pt = resolvePoint(el, proj, idPositions, geoContext, warnings);
+    if (!pt) return;
+    idPositions.set(id, pt);
+
+    let bb;
+    let svgOpts = null;
+    if (el.type === 'svg') {
+      svgOpts = buildSvgOpts(el, pal);
+      bb = SVG.measureSvg(normalizeSvgInput(el.svg), pt[0], pt[1], svgOpts);
+    } else {
+      const elOpts = isPlainObject(el.options) ? el.options : {};
+      const elAngle = EL.ELEMENT_META[el.type]?.rotatable ? (el.angle ?? elOpts.angle ?? 0) : 0;
+      bb = estimateElementBox(el.type, pt[0], pt[1], el.scale, {
+        ...elOpts,
+        angle: elAngle,
+      });
+    }
+
+    const item = layout.register({
+      id,
+      kind: 'element',
+      ...bb,
+      priority: el.priority ?? 55,
+      fixed: el.fixed !== undefined ? Boolean(el.fixed) : !avoidOverlap,
+      layer: 'elements',
+    });
+
+    let labelEntry = null;
+    if (el.label) {
+      const lObj = typeof el.label === 'string' ? { text: el.label } : el.label;
+      const lx = lObj.x ?? (pt[0] + (lObj.dx ?? 0));
+      const ly = lObj.y ?? (bb.y1 + (lObj.dy ?? 3.2));
+      const defs = labelDefaultsForKind('label', pal, defaultFace);
+      const lOpts = buildLabelDrawOpts(lObj, defs, pal);
+      const tb = estimateTextBBox(lObj.text, lx, ly, { ...defs, ...lOpts });
+      const labelItem = layout.register({
+        id: `${id}:label`,
+        kind: 'label',
+        ...tb,
+        priority: lObj.priority ?? 52,
+        fixed: lObj.fixed !== undefined ? Boolean(lObj.fixed) : !avoidOverlap,
+        layer: 'labels',
+        meta: { ownerId: id },
+      });
+      labelEntry = { lObj, lx, ly, lOpts, origBox: { x: labelItem.x, y: labelItem.y }, item: labelItem };
+    }
+
+    plan.elements.push({
+      el,
+      idx,
+      id,
+      pt: [...pt],
+      origPt: [...pt],
+      origBox: { x: item.x, y: item.y },
+      svgOpts,
+      item,
+      labelEntry,
+    });
+  });
+
+  // 7. Labels (explicit positions & paths first; placement: 'auto' deferred)
+  const autoLabels = [];
+  spec.labels.forEach((lbl, idx) => {
+    const id = lbl.id || `label-${idx + 1}`;
+    const kind = lbl.kind || 'label';
+    const defs = labelDefaultsForKind(kind, pal, defaultFace);
+    const lOpts = buildLabelDrawOpts(lbl, defs, pal);
+
+    if (lbl.placement === 'auto') {
+      autoLabels.push({ lbl, idx, id, kind, defs, lOpts });
+      return;
+    }
+
+    if (Array.isArray(lbl.path) && lbl.path.length >= 2) {
+      const pts = resolvePathPoints({ pts: lbl.path, coords: lbl.coords }, proj, false);
+      if (pts.length < 2) return;
+      const size = lOpts.size ?? defs.size;
+      const bb = bboxFromPoints(pts, size * 0.6) || normalizeBBox(pts[0][0], pts[0][1], 0, 0);
+      const mid = pts[Math.floor(pts.length / 2)];
+      idPositions.set(id, mid);
+      const item = layout.register({
+        id,
+        kind: kind === 'label' ? 'label' : `${kind}Label`,
+        ...bb,
+        priority: lbl.priority ?? 60,
+        fixed: lbl.fixed !== undefined ? Boolean(lbl.fixed) : true,
+        layer: 'labels',
+      });
+      plan.labels.push({ lbl, idx, id, kind, defs, lOpts, pathPts: pts, pt: mid, origBox: { x: item.x, y: item.y }, item });
+      return;
+    }
+
+    const pt = resolvePoint(lbl, proj, idPositions, geoContext, warnings);
+    if (!pt) return;
+    idPositions.set(id, pt);
+    const tb = estimateTextBBox(lbl.text, pt[0], pt[1], { ...defs, ...lOpts });
+    const item = layout.register({
+      id,
+      kind: kind === 'label' ? 'label' : `${kind}Label`,
+      ...tb,
+      priority: lbl.priority ?? 60,
+      fixed: lbl.fixed !== undefined ? Boolean(lbl.fixed) : !avoidOverlap,
+      layer: 'labels',
+    });
+    plan.labels.push({ lbl, idx, id, kind, defs, lOpts, pt: [...pt], origPt: [...pt], origBox: { x: item.x, y: item.y }, item });
+  });
+
+  // 8. Auto-Placement Pass (cartouche, compass, auto elements, auto labels)
+  if (spec.cartouche && (spec.cartouche.placement === 'auto' || (!plan.cartouche && autoPlace))) {
+    const c = spec.cartouche;
+    const id = c.id || 'cartouche';
+    const bw = c.w + 1.4;
+    const bh = c.h + 1.4;
+    const placed = layout.placeAuto({
+      w: bw,
+      h: bh,
+      terrain: c.terrain || 'sea',
+      preferredCorners: c.preferredCorners || ['top-left', 'bottom-left', 'top-right', 'bottom-right'],
+      margin: c.margin ?? 2.0,
+      pad,
+      fallbackAny: true,
+    });
+    const item = layout.register({
+      id,
+      kind: 'cartouche',
+      x: placed.x,
+      y: placed.y,
+      w: bw,
+      h: bh,
+      priority: c.priority ?? 95,
+      fixed: true,
+      layer: 'chrome',
+    });
+    plan.cartouche = { c, id, x: placed.x, y: placed.y, item };
+  }
+
+  if (spec.compass && (spec.compass.placement === 'auto' || (!plan.compass && autoPlace))) {
+    const cmp = spec.compass;
+    const id = cmp.id || 'compass';
+    const r = cmp.r ?? 9;
+    const bw = 3.3 * r;
+    const bh = 3.3 * r;
+    const placed = layout.placeAuto({
+      w: bw,
+      h: bh,
+      terrain: cmp.terrain || 'sea',
+      preferredCorners: cmp.preferredCorners || ['bottom-right', 'top-right', 'bottom-left', 'top-left'],
+      margin: cmp.margin ?? 2.0,
+      pad,
+      fallbackAny: true,
+    });
+    const cx = +(placed.x + bw / 2).toFixed(2);
+    const cy = +(placed.y + bh / 2).toFixed(2);
+    const item = layout.register({
+      id,
+      kind: 'compass',
+      x: placed.x,
+      y: placed.y,
+      w: bw,
+      h: bh,
+      priority: cmp.priority ?? 85,
+      fixed: true,
+      layer: 'chrome',
+    });
+    plan.compass = { cmp, id, pt: [cx, cy], r, item };
+  }
+
+  for (const { el, idx, id } of autoElements) {
+    let probeBb;
+    let svgOpts = null;
+    if (el.type === 'svg') {
+      svgOpts = buildSvgOpts(el, pal);
+      probeBb = SVG.measureSvg(normalizeSvgInput(el.svg), 0, 0, svgOpts);
+    } else {
+      const elOpts = isPlainObject(el.options) ? el.options : {};
+      const elAngle = EL.ELEMENT_META[el.type]?.rotatable ? (el.angle ?? elOpts.angle ?? 0) : 0;
+      probeBb = estimateElementBox(el.type, 0, 0, el.scale, { ...elOpts, angle: elAngle });
+    }
+    const placed = layout.placeAuto({
+      w: Math.max(1, probeBb.w),
+      h: Math.max(1, probeBb.h),
+      terrain: el.terrain || 'any',
+      margin: 2.0,
+      pad,
+      fallbackAny: true,
+    });
+    const pt = [placed.x - probeBb.x0, placed.y - probeBb.y0];
+    idPositions.set(id, pt);
+    const item = layout.register({
+      id,
+      kind: 'element',
+      x: placed.x,
+      y: placed.y,
+      w: probeBb.w,
+      h: probeBb.h,
+      priority: el.priority ?? 55,
+      fixed: el.fixed ?? false,
+      layer: 'elements',
+    });
+    let labelEntry = null;
+    if (el.label) {
+      const lObj = typeof el.label === 'string' ? { text: el.label } : el.label;
+      const lx = lObj.x ?? (pt[0] + (lObj.dx ?? 0));
+      const ly = lObj.y ?? (item.y1 + (lObj.dy ?? 3.2));
+      const defs = labelDefaultsForKind('label', pal, defaultFace);
+      const lOpts = buildLabelDrawOpts(lObj, defs, pal);
+      const tb = estimateTextBBox(lObj.text, lx, ly, { ...defs, ...lOpts });
+      const labelItem = layout.register({
+        id: `${id}:label`,
+        kind: 'label',
+        ...tb,
+        priority: lObj.priority ?? 52,
+        fixed: lObj.fixed !== undefined ? Boolean(lObj.fixed) : !avoidOverlap,
+        layer: 'labels',
+        meta: { ownerId: id },
+      });
+      labelEntry = { lObj, lx, ly, lOpts, origBox: { x: labelItem.x, y: labelItem.y }, item: labelItem };
+    }
+    plan.elements.push({
+      el,
+      idx,
+      id,
+      pt,
+      origPt: [...pt],
+      origBox: { x: item.x, y: item.y },
+      svgOpts,
+      item,
+      labelEntry,
+    });
+  }
+
+  for (const { lbl, idx, id, kind, defs, lOpts } of autoLabels) {
+    const probeBb = estimateTextBBox(lbl.text, 0, 0, { ...defs, ...lOpts });
+    const placed = layout.placeAuto({
+      w: Math.max(1, probeBb.w),
+      h: Math.max(1, probeBb.h),
+      terrain: lbl.terrain || (kind === 'sea' ? 'sea' : 'any'),
+      margin: 2.0,
+      pad,
+      fallbackAny: true,
+    });
+    const pt = [placed.x - probeBb.x0, placed.y - probeBb.y0];
+    idPositions.set(id, pt);
+    const item = layout.register({
+      id,
+      kind: kind === 'label' ? 'label' : `${kind}Label`,
+      x: placed.x,
+      y: placed.y,
+      w: probeBb.w,
+      h: probeBb.h,
+      priority: lbl.priority ?? 60,
+      fixed: lbl.fixed ?? false,
+      layer: 'labels',
+    });
+    plan.labels.push({ lbl, idx, id, kind, defs, lOpts, pt, origPt: [...pt], origBox: { x: item.x, y: item.y }, item });
+  }
+
+  // 9. Collision Avoidance Pass
+  if (avoidOverlap) {
+    layout.avoidOverlaps({ pad, respectFixed: true });
+
+    // Propagate deltas back to draw coordinates
+    for (const iEntry of plan.insets) {
+      if (iEntry.item) {
+        iEntry.ins.x = iEntry.item.x;
+        iEntry.ins.y = iEntry.item.y;
+      }
+    }
+
+    if (plan.cartouche && plan.cartouche.item) {
+      plan.cartouche.x = plan.cartouche.item.x;
+      plan.cartouche.y = plan.cartouche.item.y;
+    }
+
+    if (plan.compass && plan.compass.item) {
+      plan.compass.pt = [
+        plan.compass.item.x + plan.compass.item.w / 2,
+        plan.compass.item.y + plan.compass.item.h / 2,
+      ];
+    }
+
+    for (const cEntry of plan.cities) {
+      if (cEntry.labelItem && cEntry.origLabelBox) {
+        const ddx = cEntry.labelItem.x - cEntry.origLabelBox.x;
+        const ddy = cEntry.labelItem.y - cEntry.origLabelBox.y;
+        cEntry.dx += ddx;
+        cEntry.dy += ddy;
+      }
+    }
+
+    for (const eEntry of plan.elements) {
+      const ddx = eEntry.item.x - eEntry.origBox.x;
+      const ddy = eEntry.item.y - eEntry.origBox.y;
+      if (Math.hypot(ddx, ddy) > 1e-4) {
+        eEntry.pt[0] += ddx;
+        eEntry.pt[1] += ddy;
+        idPositions.set(eEntry.id, eEntry.pt);
+        if (eEntry.el.callout === 'auto' || spec.layout.autoCallout) {
+          plan.autoCallouts.push(layout.routeCallout(eEntry.origPt, eEntry.item));
+        }
+      }
+      if (eEntry.labelEntry) {
+        const ldx = eEntry.labelEntry.item.x - eEntry.labelEntry.origBox.x;
+        const ldy = eEntry.labelEntry.item.y - eEntry.labelEntry.origBox.y;
+        eEntry.labelEntry.lx += ldx;
+        eEntry.labelEntry.ly += ldy;
+      }
+    }
+
+    for (const lEntry of plan.labels) {
+      if (lEntry.pathPts) continue;
+      const ddx = lEntry.item.x - lEntry.origBox.x;
+      const ddy = lEntry.item.y - lEntry.origBox.y;
+      if (Math.hypot(ddx, ddy) > 1e-4) {
+        lEntry.pt[0] += ddx;
+        lEntry.pt[1] += ddy;
+        idPositions.set(lEntry.id, lEntry.pt);
+        if (lEntry.lbl.callout === 'auto') {
+          plan.autoCallouts.push(layout.routeCallout(lEntry.origPt, lEntry.item));
+        }
+      }
+    }
+  }
+
+  return plan;
 }
 
 function planSpec(specOrPath, opts = {}) {
@@ -648,219 +1528,32 @@ function planSpec(specOrPath, opts = {}) {
   }
 
   const spec = validation.spec;
-  const warnings = [...validation.warnings];
   const pal = { ...M.PALETTE, ...(spec.style.palette || {}) };
   const baseDir = spec.__baseDir || null;
-  const proj = buildProjection(spec.geo, spec.canvas, baseDir);
   const effectiveInner = spec.canvas.border ? spec.canvas.inner : 0;
+  const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);
 
-  const layout = createLayout({
-    w: spec.canvas.w,
-    h: spec.canvas.h,
-    inner: effectiveInner,
-    gridStep: spec.layout.gridStep ?? 2.0,
-    padding: spec.layout.padding ?? 1.0,
-  });
+  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts);
+  const warnings = [...validation.warnings, ...plan.warnings];
+  const diagnostics = plan.layout.toDiagnostics({ ppm: spec.canvas.ppm, warnings });
 
-  const landRings = collectGeoRingsPure(proj, spec.geo, spec.canvas, baseDir);
-  if (landRings.length) layout.setLandPolygons(landRings);
-
-  const idPositions = new Map();
-
-  // Mountains
-  if (Array.isArray(spec.layers.mountains)) {
-    spec.layers.mountains.forEach((mRange, idx) => {
-      const peaks = Array.isArray(mRange) ? mRange : (mRange.peaks || []);
-      const pts = [];
-      for (const pk of peaks) {
-        if (!Array.isArray(pk) || pk.length < 4) continue;
-        const [cx, by, pw, ph] = pk;
-        pts.push([cx - pw, by - ph], [cx + pw, by]);
-      }
-      const bb = bboxFromPoints(pts);
-      if (bb) {
-        layout.register({
-          id: (!Array.isArray(mRange) && mRange.id) || `mountains-${idx + 1}`,
-          kind: 'mountain',
-          ...bb,
-          priority: 40,
-          layer: 'terrain',
-        });
-      }
-    });
-  }
-
-  // Rice fields
-  if (Array.isArray(spec.layers.riceFields)) {
-    spec.layers.riceFields.forEach((rf, idx) => {
-      const pt = resolvePoint(rf, proj, idPositions);
-      if (!pt) return;
-      const rw = rf.w ?? 14;
-      const rh = rf.h ?? 6;
-      layout.register({
-        id: rf.id || `rice-${idx + 1}`,
-        kind: 'riceFields',
-        x: pt[0] - rw / 2,
-        y: pt[1] - rh / 2,
-        w: rw,
-        h: rh,
-        priority: 30,
-        layer: 'terrain',
-        meta: { nonBlocking: true },
-      });
-    });
-  }
-
-  // Waves
-  if (Array.isArray(spec.layers.waves)) {
-    spec.layers.waves.forEach((wv, idx) => {
-      const pt = resolvePoint(wv, proj, idPositions);
-      if (!pt) return;
-      const s = wv.scale ?? wv.s ?? 1;
-      const count = wv.count ?? 2;
-      layout.register({
-        id: wv.id || `waves-${idx + 1}`,
-        kind: 'wave',
-        x: pt[0],
-        y: pt[1] - 0.68 * s,
-        w: (12 + (count - 1) * 2) * s,
-        h: ((count - 1) * 2 + 1.36) * s,
-        priority: 20,
-        layer: 'water',
-        meta: { nonBlocking: true },
-      });
-    });
-  }
-
-  // Cities
-  if (Array.isArray(spec.layers.cities)) {
-    spec.layers.cities.forEach((city, idx) => {
-      const pt = resolvePoint(city, proj, idPositions);
-      if (!pt) return;
-      registerCityBoxes(layout, city, idx, pt, idPositions);
-    });
-  }
-
-  // Elements
-  spec.elements.forEach((el, idx) => {
-    if (el.type === 'svg') {
-      warnings.push(`elements[${idx}] (type "svg") is a PR 3 extension slot and will be rendered once SVG support is integrated.`);
-      return;
-    }
-    const pt = resolvePoint(el, proj, idPositions);
-    if (!pt) return;
-    const id = el.id || `el-${el.type}-${idx + 1}`;
-    idPositions.set(id, pt);
-    const elOpts = isPlainObject(el.options) ? el.options : {};
-    const bb = estimateElementBox(el.type, pt[0], pt[1], el.scale, {
-      ...elOpts,
-      angle: el.angle ?? elOpts.angle ?? 0,
-    });
-    layout.register({
-      id,
-      kind: 'element',
-      ...bb,
-      priority: el.priority ?? 55,
-      layer: 'elements',
-    });
-    if (el.label) {
-      const lObj = typeof el.label === 'string' ? { text: el.label } : el.label;
-      const lx = lObj.x ?? (pt[0] + (lObj.dx ?? 0));
-      const ly = lObj.y ?? (bb.y1 + (lObj.dy ?? 3.2));
-      const defs = labelDefaultsForKind('label', pal);
-      const tb = estimateTextBBox(lObj.text, lx, ly, { ...defs, ...lObj });
-      layout.register({
-        id: `${id}:label`,
-        kind: 'label',
-        ...tb,
-        priority: lObj.priority ?? 52,
-        layer: 'labels',
-        meta: { ownerId: id },
-      });
-    }
-  });
-
-  // Labels
-  spec.labels.forEach((lbl, idx) => {
-    const pt = resolvePoint(lbl, proj, idPositions);
-    if (!pt) return;
-    const kind = lbl.kind || 'label';
-    const defs = labelDefaultsForKind(kind, pal);
-    const tb = estimateTextBBox(lbl.text, pt[0], pt[1], { ...defs, ...lbl });
-    const id = lbl.id || `label-${idx + 1}`;
-    idPositions.set(id, pt);
-    layout.register({
-      id,
-      kind: kind === 'label' ? 'label' : `${kind}Label`,
-      ...tb,
-      priority: lbl.priority ?? 60,
-      layer: 'labels',
-    });
-  });
-
-  // Insets
-  spec.insets.forEach((ins, idx) => {
-    const id = ins.id || `inset-${idx + 1}`;
-    layout.register({
-      id,
-      kind: 'inset',
-      x: ins.x,
-      y: ins.y,
-      w: ins.w,
-      h: ins.h,
-      priority: ins.priority ?? 90,
-      layer: 'chrome',
-    });
-  });
-
-  // Compass
-  if (spec.compass) {
-    const pt = resolvePoint(spec.compass, proj, idPositions);
-    if (pt) {
-      const r = spec.compass.r ?? 9;
-      layout.register({
-        id: spec.compass.id || 'compass',
-        kind: 'compass',
-        x: pt[0] - 1.65 * r,
-        y: pt[1] - 1.65 * r,
-        w: 3.3 * r,
-        h: 3.3 * r,
-        priority: spec.compass.priority ?? 85,
-        layer: 'chrome',
-      });
-    }
-  }
-
-  // Cartouche
-  if (spec.cartouche && isFiniteNum(spec.cartouche.x) && isFiniteNum(spec.cartouche.y)) {
-    const c = spec.cartouche;
-    layout.register({
-      id: c.id || 'cartouche',
-      kind: 'cartouche',
-      x: c.x,
-      y: c.y,
-      w: c.w + 1.4,
-      h: c.h + 1.4,
-      priority: c.priority ?? 95,
-      layer: 'chrome',
-    });
-  }
-
-  const diagnostics = layout.toDiagnostics({ ppm: spec.canvas.ppm, warnings });
   return {
     ok: true,
     errors: [],
     warnings,
     spec,
     proj,
-    layout,
+    layout: plan.layout,
     diagnostics,
   };
 }
 
-function drawElementItem(map, el, pt, pal) {
+function drawElementItem(map, el, pt, pal, svgOpts) {
+  if (el.type === 'svg') {
+    return map.svg(normalizeSvgInput(el.svg), pt[0], pt[1], svgOpts || buildSvgOpts(el, pal));
+  }
+
   const rawOpts = isPlainObject(el.options) ? { ...el.options } : {};
-  // Resolve named palette color tokens in options
   for (const colorKey of ['color', 'wall', 'roof', 'sail', 'sail2', 'bowlColor', 'soupColor', 'hatColor', 'capColor', 'blushColor', 'apron']) {
     if (typeof rawOpts[colorKey] === 'string') {
       rawOpts[colorKey] = resolveColor(rawOpts[colorKey], pal);
@@ -870,29 +1563,38 @@ function drawElementItem(map, el, pt, pal) {
   if (el.type === 'person') {
     const scale = el.scale ?? 0.52;
     map.person(pt[0], pt[1], scale, rawOpts);
-    return;
+    return null;
   }
 
   const fn = map.el[el.type];
   if (el.type === 'koi') {
     const angle = el.angle ?? rawOpts.angle ?? 0;
-    fn(pt[0], pt[1], el.scale ?? 1, angle);
-    return;
+    return fn(pt[0], pt[1], el.scale ?? 1, angle);
   }
   if (Object.hasOwn(EL.ELEMENT_META, el.type) && EL.ELEMENT_META[el.type].rotatable) {
     const angle = el.angle ?? rawOpts.angle ?? 0;
-    fn(pt[0], pt[1], el.scale ?? 1, angle, rawOpts);
-    return;
+    return fn(pt[0], pt[1], el.scale ?? 1, angle, rawOpts);
   }
   if (el.type === 'hanbok') {
-    fn(pt[0], pt[1], el.scale ?? 0.52, rawOpts);
-    return;
+    return fn(pt[0], pt[1], el.scale ?? 0.52, rawOpts);
   }
   if (el.scale !== undefined || Object.keys(rawOpts).length > 0) {
-    fn(pt[0], pt[1], el.scale ?? 1, rawOpts);
-  } else {
-    fn(pt[0], pt[1]);
+    return fn(pt[0], pt[1], el.scale ?? 1, rawOpts);
   }
+  return fn(pt[0], pt[1]);
+}
+
+function updateItemBox(item, bb) {
+  if (!item || !bb) return;
+  const norm = normalizeBBox(bb.x0 ?? bb.x, bb.y0 ?? bb.y, bb.w, bb.h);
+  item.x = norm.x;
+  item.y = norm.y;
+  item.w = norm.w;
+  item.h = norm.h;
+  item.x0 = norm.x0;
+  item.y0 = norm.y0;
+  item.x1 = norm.x1;
+  item.y1 = norm.y1;
 }
 
 function renderSpec(specOrPath, opts = {}) {
@@ -904,9 +1606,9 @@ function renderSpec(specOrPath, opts = {}) {
   }
 
   const spec = validation.spec;
-  const warnings = [...validation.warnings];
   const pal = { ...M.PALETTE, ...(spec.style.palette || {}) };
   const baseDir = spec.__baseDir || null;
+  registerSpecFonts(spec, baseDir);
 
   const seed = opts.seed ?? spec.meta.seed ?? 'map-1';
   const effectiveBorder = spec.canvas.border !== false;
@@ -932,27 +1634,19 @@ function renderSpec(specOrPath, opts = {}) {
 
   const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);
 
-  const layout = createLayout({
-    w: spec.canvas.w,
-    h: spec.canvas.h,
-    inner: effectiveInner,
-    gridStep: spec.layout.gridStep ?? 2.0,
-    padding: spec.layout.padding ?? 1.0,
-  });
-
-  const idPositions = new Map();
-
   // 2. Graticule
   if (spec.layers.graticule && proj) {
     const gratOpts = isPlainObject(spec.layers.graticule) ? spec.layers.graticule : {};
     map.graticule(proj, gratOpts);
   }
 
-  // 3 & 4. Waterlines + Neighboring land + Focus land
+  // 3 & 4. Waterlines + Neighboring land + Focus land + Admin-1
   const allLandRings = [];
+  let hasCountryFocus = false;
   if (spec.geo && proj) {
     const geoSource = resolveGeoSource(spec.geo.fit?.source ?? spec.geo.source, baseDir);
     if (spec.geo.focus || Array.isArray(spec.geo.neighbors)) {
+      hasCountryFocus = Boolean(spec.geo.focus);
       const focusColor = Array.isArray(spec.geo.color)
         ? spec.geo.color.map((c) => resolveColor(c, pal))
         : resolveColor(spec.geo.color || pal.land, pal);
@@ -974,6 +1668,15 @@ function renderSpec(specOrPath, opts = {}) {
       for (const n of drawn.neighbors) allLandRings.push(...n.rings);
       for (const f of drawn.focus) allLandRings.push(...f.rings);
     }
+
+    if (spec.geo.admin1) {
+      const a1Opts = normalizeAdmin1Opts(spec.geo, pal, baseDir, hasCountryFocus);
+      if (a1Opts) {
+        const drawnA1 = map.admin1(proj, a1Opts);
+        for (const n of drawnA1.neighbors) allLandRings.push(...n.rings);
+        for (const f of drawnA1.focus) allLandRings.push(...f.rings);
+      }
+    }
   }
 
   // Optional custom land polygons in spec.geo.land
@@ -992,9 +1695,11 @@ function renderSpec(specOrPath, opts = {}) {
     });
   }
 
-  if (allLandRings.length) {
-    layout.setLandPolygons(allLandRings);
-  }
+  // Build unified layout plan (including auto-placement & collision avoidance) using actual rendered land rings
+  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts, allLandRings);
+  const { layout, idPositions } = plan;
+  const warnings = [...validation.warnings, ...plan.warnings];
+  const geoContext = getGeoContext(spec);
 
   // 5. Lakes, rivers, mountains, riceFields
   if (Array.isArray(spec.layers.lakes)) {
@@ -1004,6 +1709,11 @@ function renderSpec(specOrPath, opts = {}) {
       const color = resolveColor((!Array.isArray(lk) && lk.color) || pal.ocean, pal);
       map.part(pts, color, { pressure: 0.5, passes: 2, nib: 0.22, outlineColor: pal.waterline });
     });
+  } else if (isPlainObject(spec.layers.lakes) && (spec.layers.lakes.auto || spec.layers.lakes.names) && proj) {
+    const lkOpts = { ...spec.layers.lakes };
+    if (lkOpts.color) lkOpts.color = resolveColor(lkOpts.color, pal);
+    if (lkOpts.outlineColor) lkOpts.outlineColor = resolveColor(lkOpts.outlineColor, pal);
+    map.geoLakes(proj, lkOpts);
   }
 
   if (Array.isArray(spec.layers.rivers)) {
@@ -1015,58 +1725,33 @@ function renderSpec(specOrPath, opts = {}) {
       else rvOpts.color = pal.river;
       map.river(pts, rvOpts);
     });
+  } else if (isPlainObject(spec.layers.rivers) && (spec.layers.rivers.auto || spec.layers.rivers.names) && proj) {
+    const rvOpts = { ...spec.layers.rivers };
+    if (rvOpts.color) rvOpts.color = resolveColor(rvOpts.color, pal);
+    if (rvOpts.minScaleRank !== undefined && rvOpts.maxRank === undefined) rvOpts.maxRank = rvOpts.minScaleRank;
+    map.geoRivers(proj, rvOpts);
   }
 
   if (Array.isArray(spec.layers.mountains)) {
-    spec.layers.mountains.forEach((mRange, idx) => {
-      const peaks = Array.isArray(mRange) ? mRange : (mRange.peaks || []);
+    for (const { mRange, peaks } of plan.mountains) {
       const mOpts = isPlainObject(mRange) ? { ...mRange } : {};
       if (mOpts.color) mOpts.color = resolveColor(mOpts.color, pal);
       map.mountainRange(peaks, mOpts);
-      const pts = [];
-      for (const pk of peaks) {
-        if (!Array.isArray(pk) || pk.length < 4) continue;
-        const [cx, by, pw, ph] = pk;
-        pts.push([cx - pw, by - ph], [cx + pw, by]);
-      }
-      const bb = bboxFromPoints(pts);
-      if (bb) {
-        layout.register({
-          id: (!Array.isArray(mRange) && mRange.id) || `mountains-${idx + 1}`,
-          kind: 'mountain',
-          ...bb,
-          priority: 40,
-          layer: 'terrain',
-        });
-      }
-    });
+    }
+  } else if (isPlainObject(spec.layers.mountains) && spec.layers.mountains.auto && proj) {
+    const mOpts = { ...spec.layers.mountains };
+    if (mOpts.color) mOpts.color = resolveColor(mOpts.color, pal);
+    map.geoMountains(proj, mOpts);
   }
 
-  if (Array.isArray(spec.layers.riceFields)) {
-    spec.layers.riceFields.forEach((rf, idx) => {
-      const pt = resolvePoint(rf, proj, idPositions);
-      if (!pt) return;
-      const rw = rf.w ?? 14;
-      const rh = rf.h ?? 6;
-      map.riceFields(pt[0], pt[1], rw, rh);
-      layout.register({
-        id: rf.id || `rice-${idx + 1}`,
-        kind: 'riceFields',
-        x: pt[0] - rw / 2,
-        y: pt[1] - rh / 2,
-        w: rw,
-        h: rh,
-        priority: 30,
-        layer: 'terrain',
-        meta: { nonBlocking: true },
-      });
-    });
+  for (const { pt, rw, rh } of plan.riceFields) {
+    map.riceFields(pt[0], pt[1], rw, rh);
   }
 
   // 6. Routes, waves, sea & region labels
   if (Array.isArray(spec.layers.routes)) {
     spec.layers.routes.forEach((rt) => {
-      const pts = resolvePathPoints(rt, proj);
+      const pts = resolvePathPoints(rt, proj, true);
       if (pts.length < 2) return;
       const rtOpts = isPlainObject(rt) ? { ...rt } : {};
       if (rtOpts.color) rtOpts.color = resolveColor(rtOpts.color, pal);
@@ -1074,159 +1759,91 @@ function renderSpec(specOrPath, opts = {}) {
     });
   }
 
-  if (Array.isArray(spec.layers.waves)) {
-    spec.layers.waves.forEach((wv, idx) => {
-      const pt = resolvePoint(wv, proj, idPositions);
-      if (!pt) return;
-      const s = wv.scale ?? wv.s ?? 1;
-      const count = wv.count ?? 2;
-      map.waves(pt[0], pt[1], s, count);
-      layout.register({
-        id: wv.id || `waves-${idx + 1}`,
-        kind: 'wave',
-        x: pt[0],
-        y: pt[1] - 0.68 * s,
-        w: (12 + (count - 1) * 2) * s,
-        h: ((count - 1) * 2 + 1.36) * s,
-        priority: 20,
-        layer: 'water',
-        meta: { nonBlocking: true },
-      });
-    });
+  for (const { pt, s, count } of plan.waves) {
+    map.waves(pt[0], pt[1], s, count);
   }
 
-  const bgLabels = [];
-  const fgLabels = [];
-  spec.labels.forEach((lbl, idx) => {
-    if (lbl.kind === 'sea' || lbl.kind === 'region') bgLabels.push([lbl, idx]);
-    else fgLabels.push([lbl, idx]);
-  });
-
-  const drawSpecLabel = (lbl, idx) => {
-    const pt = resolvePoint(lbl, proj, idPositions);
-    if (!pt) return;
-    const kind = lbl.kind || 'label';
-    const lOpts = {};
-    if (lbl.face) lOpts.face = lbl.face;
-    if (lbl.size !== undefined) lOpts.size = lbl.size;
-    if (lbl.align) lOpts.align = lbl.align;
-    if (lbl.color) lOpts.color = resolveColor(lbl.color, pal);
-    if (lbl.spacing !== undefined) lOpts.spacing = lbl.spacing;
-    if (lbl.slant !== undefined) lOpts.slant = lbl.slant;
-
+  const drawPlannedLabel = (entry) => {
+    const { lbl, kind, lOpts, pt, pathPts, item } = entry;
     let written;
-    if (kind === 'sea') written = map.seaLabel(lbl.text, pt[0], pt[1], lOpts);
-    else if (kind === 'region') written = map.regionLabel(lbl.text, pt[0], pt[1], lOpts);
-    else written = map.label(lbl.text, pt[0], pt[1], lOpts);
-
-    const id = lbl.id || `label-${idx + 1}`;
-    idPositions.set(id, pt);
-    if (written) {
-      layout.register({
-        id,
-        kind: kind === 'label' ? 'label' : `${kind}Label`,
-        ...bboxFromWrite(written),
-        priority: lbl.priority ?? 60,
-        layer: 'labels',
-      });
+    if (pathPts) {
+      written = map.writeAlongPath(lbl.text, pathPts, lOpts);
+    } else if (kind === 'sea') {
+      written = map.seaLabel(lbl.text, pt[0], pt[1], lOpts);
+    } else if (kind === 'region') {
+      written = map.regionLabel(lbl.text, pt[0], pt[1], lOpts);
+    } else {
+      written = map.label(lbl.text, pt[0], pt[1], lOpts);
+    }
+    if (written && item) {
+      updateItemBox(item, bboxFromWrite(written));
     }
   };
 
-  for (const [lbl, idx] of bgLabels) drawSpecLabel(lbl, idx);
-
-  // 7. Cities, elements, callouts, foreground labels
-  if (Array.isArray(spec.layers.cities)) {
-    spec.layers.cities.forEach((city, idx) => {
-      const pt = resolvePoint(city, proj, idPositions);
-      if (!pt) return;
-      const cOpts = {
-        capital: Boolean(city.capital),
-        dx: city.dx,
-        dy: city.dy,
-        size: city.size,
-        align: city.align,
-      };
-      map.city(pt[0], pt[1], city.name, cOpts);
-      registerCityBoxes(layout, city, idx, pt, idPositions);
-    });
+  for (const entry of plan.labels) {
+    if (entry.kind === 'sea' || entry.kind === 'region') drawPlannedLabel(entry);
   }
 
-  spec.elements.forEach((el, idx) => {
-    if (el.type === 'svg') {
-      warnings.push(`Skipped elements[${idx}] (type "svg"): SVG rendering is wired in PR 5.`);
-      return;
+  // 7. Cities, elements, callouts, foreground labels
+  for (const cEntry of plan.cities) {
+    const { city, pt, dx, dy, labelItem } = cEntry;
+    const cOpts = {
+      capital: Boolean(city.capital),
+      dx,
+      dy,
+      size: city.size,
+      face: city.face,
+      align: city.align,
+      color: city.color ? resolveColor(city.color, pal) : undefined,
+      sub: city.subtext ?? city.sub,
+      bilingualLayout: city.bilingualLayout,
+      layout: city.layout,
+      secondarySize: city.secondarySize ?? city.subSize,
+      secondaryFace: city.secondaryFace ?? city.subFace,
+      secondaryColor: city.secondaryColor ? resolveColor(city.secondaryColor, pal) : undefined,
+    };
+    const written = map.city(pt[0], pt[1], city.name, cOpts);
+    if (written && labelItem) {
+      updateItemBox(labelItem, bboxFromWrite(written));
     }
-    const pt = resolvePoint(el, proj, idPositions);
-    if (!pt) return;
-    const id = el.id || `el-${el.type}-${idx + 1}`;
-    idPositions.set(id, pt);
+  }
 
-    drawElementItem(map, el, pt, pal);
-
-    const elOpts = isPlainObject(el.options) ? el.options : {};
-    const bb = estimateElementBox(el.type, pt[0], pt[1], el.scale, {
-      ...elOpts,
-      angle: el.angle ?? elOpts.angle ?? 0,
-    });
-    layout.register({
-      id,
-      kind: 'element',
-      ...bb,
-      priority: el.priority ?? 55,
-      layer: 'elements',
-    });
-
-    if (el.label) {
-      const lObj = typeof el.label === 'string' ? { text: el.label } : el.label;
-      const lx = lObj.x ?? (pt[0] + (lObj.dx ?? 0));
-      const ly = lObj.y ?? (bb.y1 + (lObj.dy ?? 3.2));
-      const lOpts = {};
-      if (lObj.face) lOpts.face = lObj.face;
-      if (lObj.size !== undefined) lOpts.size = lObj.size;
-      if (lObj.align) lOpts.align = lObj.align;
-      if (lObj.color) lOpts.color = resolveColor(lObj.color, pal);
-      const written = map.label(lObj.text, lx, ly, lOpts);
-      if (written) {
-        layout.register({
-          id: `${id}:label`,
-          kind: 'label',
-          ...bboxFromWrite(written),
-          priority: lObj.priority ?? 52,
-          layer: 'labels',
-          meta: { ownerId: id },
-        });
+  for (const eEntry of plan.elements) {
+    const { el, pt, svgOpts, item, labelEntry } = eEntry;
+    const drawnBb = drawElementItem(map, el, pt, pal, svgOpts);
+    if (drawnBb && item) {
+      updateItemBox(item, drawnBb);
+    }
+    if (labelEntry) {
+      const written = map.label(labelEntry.lObj.text, labelEntry.lx, labelEntry.ly, labelEntry.lOpts);
+      if (written && labelEntry.item) {
+        updateItemBox(labelEntry.item, bboxFromWrite(written));
       }
     }
-  });
+  }
 
-  spec.callouts.forEach((co) => {
-    const fromPt = resolvePoint(co.from, proj, idPositions);
-    const toPt = resolvePoint(co.to, proj, idPositions);
-    if (!fromPt || !toPt) return;
+  for (const co of spec.callouts) {
+    const fromPt = resolvePoint(co.from, proj, idPositions, geoContext);
+    const toPt = resolvePoint(co.to, proj, idPositions, geoContext);
+    if (!fromPt || !toPt) continue;
     const coOpts = {};
     if (co.bendX !== undefined) coOpts.bendX = co.bendX;
     if (co.bendY !== undefined) coOpts.bendY = co.bendY;
     if (co.color) coOpts.color = resolveColor(co.color, pal);
     map.callout(fromPt, toPt, coOpts);
-  });
+  }
 
-  for (const [lbl, idx] of fgLabels) drawSpecLabel(lbl, idx);
+  for (const autoCo of plan.autoCallouts) {
+    map.callout(autoCo.from, autoCo.to, { bendX: autoCo.bendX, bendY: autoCo.bendY });
+  }
+
+  for (const entry of plan.labels) {
+    if (entry.kind !== 'sea' && entry.kind !== 'region') drawPlannedLabel(entry);
+  }
 
   // 8. Insets, compass, cartouche
-  spec.insets.forEach((ins, idx) => {
-    const id = ins.id || `inset-${idx + 1}`;
+  for (const { ins } of plan.insets) {
     map.insetBox(ins.x, ins.y, ins.w, ins.h, ins.title);
-    layout.register({
-      id,
-      kind: 'inset',
-      x: ins.x,
-      y: ins.y,
-      w: ins.w,
-      h: ins.h,
-      priority: ins.priority ?? 90,
-      layer: 'chrome',
-    });
-
     if (ins.geo) {
       const subPadTop = ins.title ? 9 : 3;
       const subFrame = [ins.x + 3, ins.y + subPadTop, ins.x + ins.w - 3, ins.y + ins.h - 3];
@@ -1248,60 +1865,43 @@ function renderSpec(specOrPath, opts = {}) {
           source: subSource,
         });
       }
-    }
-  });
-
-  if (spec.compass) {
-    const pt = resolvePoint(spec.compass, proj, idPositions);
-    if (pt) {
-      const r = spec.compass.r ?? 9;
-      let angle = 0;
-      if (spec.compass.angle === 'auto' || spec.compass.angle === undefined) {
-        if (proj) {
-          const [lon, lat] = proj.inverse(pt[0], pt[1]);
-          angle = proj.northAngle(lon, lat);
-        }
-      } else if (isFiniteNum(spec.compass.angle)) {
-        angle = spec.compass.angle;
+      if (subProj && subGeo.admin1) {
+        const subA1 = normalizeAdmin1Opts(subGeo, pal, baseDir, Boolean(subGeo.focus));
+        if (subA1) map.admin1(subProj, { ...subA1, frame: clipFrame });
       }
-      map.compass(pt[0], pt[1], r, {
-        angle,
-        rhumb: spec.compass.rhumb !== false,
-      });
-      layout.register({
-        id: spec.compass.id || 'compass',
-        kind: 'compass',
-        x: pt[0] - 1.65 * r,
-        y: pt[1] - 1.65 * r,
-        w: 3.3 * r,
-        h: 3.3 * r,
-        priority: spec.compass.priority ?? 85,
-        layer: 'chrome',
-      });
     }
   }
 
-  if (spec.cartouche && isFiniteNum(spec.cartouche.x) && isFiniteNum(spec.cartouche.y)) {
-    const c = spec.cartouche;
-    const info = {
-      ...c,
-      country: c.country ?? c.title,
-      facts: normalizeCartoucheFacts(c.facts),
-      mmPerKm: c.mmPerKm ?? (proj ? proj.mmPerKm : undefined),
-    };
-    map.cartouche(c.x, c.y, c.w, c.h, info);
-    layout.register({
-      id: c.id || 'cartouche',
-      kind: 'cartouche',
-      x: c.x,
-      y: c.y,
-      w: c.w + 1.4,
-      h: c.h + 1.4,
-      priority: c.priority ?? 95,
-      layer: 'chrome',
+  if (plan.compass) {
+    const { cmp, pt, r } = plan.compass;
+    let angle = 0;
+    if (cmp.angle === 'auto' || cmp.angle === undefined) {
+      if (proj) {
+        const [lon, lat] = proj.inverse(pt[0], pt[1]);
+        angle = proj.northAngle(lon, lat);
+      }
+    } else if (isFiniteNum(cmp.angle)) {
+      angle = cmp.angle;
+    }
+    map.compass(pt[0], pt[1], r, {
+      angle,
+      rhumb: cmp.rhumb !== false,
     });
   }
 
+  if (plan.cartouche) {
+    const { c, x, y } = plan.cartouche;
+    const info = {
+      ...c,
+      country: c.country ?? c.title,
+      lang: c.lang ?? spec.meta.lang,
+      facts: normalizeCartoucheFacts(c.facts),
+      mmPerKm: c.mmPerKm ?? (proj ? proj.mmPerKm : undefined),
+    };
+    map.cartouche(x, y, c.w, c.h, info);
+  }
+
+  layout.rebuildGrid();
   const diagnostics = layout.toDiagnostics({ ppm: spec.canvas.ppm, warnings });
 
   return {

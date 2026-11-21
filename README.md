@@ -1,8 +1,8 @@
 # handdrawn-map-kit
 
-A standalone **hand-drawn illustrated cultural map toolkit** in Node.js — inspired by Aleksandra & Daniel Mizielinski's *Maps* (*《地图（人文版）》*), with a performance-tuned dry-media engine (paper tooth, pencil, technical pen, watercolor wash) extracted from [kevintngo/statechart-art](https://github.com/kevintngo/statechart-art) (MIT).
+An **AI/Agent-driven hand-drawn illustrated cultural map engine** in Node.js — inspired by Aleksandra & Daniel Mizielinski's *Maps* (*《地图（人文版）》*), built on a performance-tuned dry-media engine (paper tooth, pencil, technical pen, watercolor wash) extracted from [kevintngo/statechart-art](https://github.com/kevintngo/statechart-art) (MIT).
 
-Zero flowchart/TLA+/Mermaid dependencies — depends solely on `@napi-rs/canvas`.
+Minimal runtime dependencies: `@napi-rs/canvas` (2D rasterization) and `js-yaml` (declarative YAML specs).
 
 ![Japan Hand-Drawn Cartographic Cultural Atlas](docs/japan_cultural_map.png)
 
@@ -10,97 +10,74 @@ Zero flowchart/TLA+/Mermaid dependencies — depends solely on `@napi-rs/canvas`
 
 ## Features
 
-- **Any Country**: Coastlines and borders come from the public-domain [Natural Earth](https://www.naturalearthdata.com/) dataset (1:50m bundled). Name a country and the kit loads its outline, fits a projection to it, and draws the neighbours that fall inside the frame.
-- **Cartographic Projection & Graticules**: Oblique conformal-like `(lon, lat) -> [x, y]` projection, latitude/longitude curves chosen from the area on the sheet, and neatline degree labels (E/W, N/S).
-- **Vintage Atlas Styling**:
-  - Alternating black/cream **Zebra Neatline Border** with corner rosettes;
-  - Morphological shallow-water bathymetric wash + concentric hand-drawn **coastal waterlines**;
-  - Framed parchment **Cartouche** (title, waving flag from 30+ built-ins or your own spec, country facts, map legend, graphical scale bar matched to the projection) & **Inset Map Box**;
-  - True-North rotatable **Compass Rose** with rhumb lines.
-- **40+ Cultural, Landmark, Animal & Culinary Illustrations**: Mountains, terraced rice fields, bamboo, sakura, pines, torii gates, pagodas, castles, Tokyo Tower, lighthouses, Shinkansen bullet trains, Kitamaebune ships, sumo rings, Shiba Inu, Nara deer, red-crowned cranes, koi carp, whales, ramen/gyudon bowls, sushi, onigiri, dango, matcha, daruma, origami, koinobori; palace gates, hanok, onggi jars, bibimbap, gimbap, dol hareubang, turtle ships, tigers, mugunghwa and hanbok; and parameterized hand-drawn characters (`person`).
-- **20x Performance Optimized**: Fast paper-tooth-preserving ocean/border washes, broad pencil side-shading on large landmasses, and dirty-bbox contour extraction (~6 seconds for `--fast` preview, ~20 seconds for `3000×2000` HD).
+- **Declarative JSON/YAML Spec + CLI (`handdrawn-map`) + Agent Skill (`SKILL.md`)**: Author full cultural maps declaratively in YAML or JSON, inspect built-in assets & Natural Earth geography via CLI, and iterate using structured **Layout Diagnostics JSON** (`--diagnostics`).
+- **Multi-Layer Natural Earth Geography**: Bundled Natural Earth datasets (`data/`) cover 1:50m countries, 1:10m simplified **admin-1 states & provinces** (251 countries with `zh`/ISO-3166-2 support), **major rivers**, **lakes**, **populated places** (with `zh`/`ja`/`ko` names & capitals), and **elevation peaks & mountain ranges** — so agents reference real features by name instead of hallucinating coordinates.
+- **Inline SVG Dry-Media Renderer (`src/svgDraw.js`)**: Zero-dependency SVG `<path d>` & basic shapes (`<svg>`, `<g>`, `<circle>`, `<ellipse>`, `<rect>`, `<polygon>`, `<polyline>`, `<line>`, `transform`, style inheritance) rendered through the pencil, watercolor wash, and hatching dry-media engine — define custom local landmarks inline when built-ins don't cover them.
+- **65 Built-in Cultural, Landmark, Animal & Culinary Illustrations**: 43 classic East Asian & cartographic icons plus 22 new China, Europe, and world icons (`pavilion`, `greatWall`, `archBridge`, `lantern`, `panda`, `dumplings`, `teapot`, `cathedral`, `europeanCastle`, `windmill`, `romanArch`, `vineyard`, `oliveTree`, `cheeseWine`, `palmTree`, `volcano`, `waterfall`, `train`, `ship`, `hotAirBalloon`, `fish`, `yurt`), each reporting exact mm bounding boxes (`ELEMENT_BOUNDS`, `ELEMENT_META`, `elementBBox`), plus parameterized hand-drawn characters (`person`).
+- **CJK & Multilingual Hand-Drawn Typography**: Bundled `ZCOOL XiaoWei` (`engine/fonts/ZCOOLXiaoWei-Regular.ttf`, SIL OFL 1.1) + OS CJK font discovery + `registerFont()`, script-aware mixed Latin/Han/Kana/Hangul rendering, accurate `measureBox()`, **bilingual stacked/inline labels** (`writeBilingual`), **curved path labels** (`writeAlongPath`), rotated labels, and CJK-safe cartouches & inset boxes.
+- **Auto-Placement & Collision Avoidance (`src/layout.js`)**: Automatic empty-space placement (`placement: 'auto'`) preferring open sea with graceful landlocked fallback, priority-aware collision avoidance (`--auto-layout` / `layout.avoidOverlap`), callout routing, and structured mm bounding-box diagnostics.
+- **Vintage Atlas Styling & Performance**: Zebra neatline border, bathymetric shallow-water wash + concentric coastal waterlines, framed parchment cartouche (30+ built-in waving flags), rotatable compass rose, and ~6s `--fast` (`1500×1000`) / ~20s `--hd` (`3000×2000`) rendering.
 
 ## Quick Start
 
 ```bash
 npm install
-npm run demo       # Fast preview (~6s, 1500x1000 px) -> out/japan_cultural_map.png
-npm run demo:hd    # High-res print quality (~20s, 3000x2000 px) -> out/japan_cultural_map.png
-npm run demo:korea     # Korea, fast preview -> out/korea_cultural_map.png
-npm run demo:korea:hd  # Korea, 3000x2000 px
+
+# Render declarative YAML cultural map specs via CLI
+npx handdrawn-map render examples/specs/sichuan.yaml -o out/sichuan.png --fast --auto-layout --diagnostics out/sichuan.diag.json
+npx handdrawn-map render examples/specs/italy.yaml -o out/italy.png --fast --auto-layout --diagnostics out/italy.diag.json
+
+# Inspect bundled Natural Earth geography, elements, flags, and fonts
+npx handdrawn-map inspect admin1 China --json
+npx handdrawn-map inspect places Italy --json
+npx handdrawn-map inspect rivers Yangtze --json
+npx handdrawn-map inspect elements --json
+npx handdrawn-map inspect fonts --json
+
+# Classic JS atlas demos
+npm run demo            # Japan fast preview (1500x1000 px) -> out/japan_cultural_map.png
+npm run demo:hd         # Japan HD (3000x2000 px)
+npm run demo:korea      # Korea fast preview -> out/korea_cultural_map.png
+npm run demo:korea:hd   # Korea HD (3000x2000 px)
 ```
 
-## Map Any Country
+## Declarative Spec Example (YAML)
+
+See [`examples/specs/sichuan.yaml`](examples/specs/sichuan.yaml) (Chinese province cultural map with admin-1 highlight, CJK bilingual labels, and inline SVG Sanxingdui mask) and [`examples/specs/italy.yaml`](examples/specs/italy.yaml) (European country cultural map with Natural Earth rivers/admin-1, built-in icons, and inline SVG Colosseum).
+
+For AI agents, see [`SKILL.md`](SKILL.md) for the complete authoring schema and `--fast --auto-layout --diagnostics` iterative loop.
+
+## Programmatic JS API
 
 ```js
-const { createMap } = require('./src');
+const { createMap } = require('handdrawn-map-kit');
 
 async function main() {
   const map = createMap({ w: 300, h: 200, seed: 'italy-01' });
 
-  // Fit the projection to the country (code, ISO code or English name)
+  // Fit to a country, admin-1 ({ country, admin1 }), or [west, south, east, north] bbox
   const proj = map.fitProjection('Italy');
-  map.graticule(proj); // round lon/lat values for whatever area is on the sheet
+  map.graticule(proj);
 
-  // Coastline + borders from Natural Earth; neighbours inside the frame are drawn in grey
+  // Coastline + borders + admin-1 + rivers + lakes from Natural Earth
   map.countries(proj, { focus: 'Italy' });
+  map.admin1(proj, { country: 'Italy', bordersOnly: true });
+  map.geoRivers(proj, { maxRank: 6 });
+  map.geoLakes(proj);
 
-  const [x, y] = proj(12.5, 41.9);
-  map.city(x, y, 'Rome', { capital: true });
+  const [x, y] = proj(12.496, 41.902);
+  map.city(x, y, 'Roma', { capital: true });
 
   map.cartouche(13.5, 13, 88, 44, {
-    country: 'ITALY',
+    country: 'ITALIA',
     flag: 'ITA',
-    capital: 'Rome',
-    mmPerKm: proj.mmPerKm, // scale bar follows the projection
+    capital: 'Roma',
+    mmPerKm: proj.mmPerKm,
   });
   await map.save('out/italy.png');
 }
 main();
 ```
-
-- `map.fitProjection(country | [west, south, east, north], { frame, rotDeg })` — `frame` is the `[x0, y0, x1, y1]` mm area the country should fill; overseas territories are ignored when fitting.
-- `map.countries(proj, { focus, neighbors, color, neighborColor })` — `focus` is one country or a list; `neighbors` is `true` (auto), `false`, or a list. Returns the drawn rings so you can reuse them.
-- `map.countryRings(proj, country)` — just the smoothed outline in mm, for `map.part()` / `map.coastWaterlines()`.
-- `map.graticule(proj, { step, lons, lats })` — all optional.
-- `flag` — a built-in (`FLAGS`: JPN, KOR, CHN, FRA, DEU, ITA ...), a spec such as `{ type: 'stripes', dir: 'h', colors: ['#000', '#d00', '#fc0'] }` (also `disc`, `cross`, `star`), or a function `(F) => { F.field(color); F.fill(poly, color); }` drawing in a 13 x 8.4 box.
-- `getCountry()`, `listCountries()` and `countriesInBBox()` are exported for direct access to the data.
-
-The bundled 1:50m data suits whole-country maps. For more coastal detail, download the 1:10m `ne_10m_admin_0_countries.geojson` from Natural Earth and pass its path as `source` to `fitProjection` / `countries` / `countryRings`. Country boundaries and names are Natural Earth's; the projection is meant for country and regional maps, not world maps.
-
-## Minimal Example
-
-```js
-const { createMap, PALETTE: C } = require('./src');
-
-async function main() {
-  const map = createMap({ w: 300, h: 200, seed: 'my-atlas-01', paper: 'hotpress' });
-  const proj = map.createProjection({ lon0: 137.6, lat0: 38.2, cx: 160, cy: 100, scale: 0.14, rotDeg: 26 });
-
-  map.graticule(proj, { lons: [130, 134, 138, 142], lats: [34, 38, 42] });
-
-  const poly = map.D.curve(proj.pts([[139.0, 35.0], [140.8, 35.7], [140.9, 38.3], [138.9, 37.9]]), true, 0.22);
-  map.coastWaterlines([poly]);
-  map.part(poly, C.land);
-
-  const [tx, ty] = proj(139.76, 35.68);
-  map.el.tokyoTower(tx + 5, ty - 1.5, 0.58);
-  map.city(tx, ty, 'Tokyo', { capital: true });
-
-  map.person(tx - 12, ty + 14, 0.5, {
-    seed: 'traveler',
-    pose: 'wave',
-    hair: 'bob',
-    hat: 'conical',
-    shirt: { color: C.sakura },
-  });
-
-  await map.save('out/my_map.png');
-}
-main();
-```
-
-Output resolution is set by the `ppm` option (pixels per millimetre, default `10`): `createMap({ w: 300, h: 200, ppm: 5 })` renders a 1500×1000 preview.
 
 ## Using It From Another Project
 
@@ -109,29 +86,48 @@ npm install github:wangreng/handdrawn-map-kit
 ```
 
 ```js
-const { createMap, createProjection, PALETTE, POSES } = require('handdrawn-map-kit');
+const {
+  createMap,
+  loadSpec,
+  validateSpec,
+  renderSpec,
+  createLayout,
+  drawSvg,
+  measureSvg,
+  writeBilingual,
+  writeAlongPath,
+  PALETTE,
+} = require('handdrawn-map-kit');
 ```
 
-## Development
+## Development & Testing
 
 ```bash
-npm run lint    # ESLint
-npm test        # node:test suite (projection, elements, poses, PNG output, seed determinism)
+npm run lint       # ESLint
+npm test           # Fast unit test suite (test/*.test.js)
+npm run test:e2e   # Opaque-box E2E test suite (test/e2e/*.e2e.js)
 ```
 
 ## Directory Structure
 
-- `src/index.js` — Main `createMap()` entry point
-- `src/mapPrimitives.js` — Projection, graticules, coastal waterlines, zebra border, cartouche, compass, inset box, and fast paper-tooth wash
-- `src/elements.js` — 40+ reusable cultural, nature, landmark, transport, animal & food illustrations
-- `src/geo.js` — Natural Earth country lookup (`getCountry`, `countriesInBBox` ...)
-- `src/flags.js` — Built-in cartouche flags and the flag spec renderer
-- `data/ne_50m_admin_0_countries.json` — Country outlines, rebuilt with `npm run build:data`
-- `src/japanGeo.js` — Hand-simplified `(lon, lat)` coastlines used by the Japan example
-- `examples/japan_cultural_map.js` — Full double-page illustrated atlas of Japan
-- `examples/korea_cultural_map.js` — Korea, drawn entirely from Natural Earth outlines
-- `engine/` — Performance-tuned dry-media & paper simulation engine (`kit/`, `lib/`, `fonts/`)
+- `bin/cli.js` — `handdrawn-map` CLI (`render`, `inspect`)
+- `src/index.js` — Main `createMap()` entry point & public exports
+- `src/spec.js` — Declarative JSON/YAML Spec loader, validator, planner, and renderer
+- `src/layout.js` — mm BBox tracker, spatial OccupancyGrid, diagnostics JSON, auto-placement, collision avoidance & callout routing
+- `src/geo.js` — Natural Earth admin-0, admin-1, rivers, lakes, populated places, landforms & `resolveRegion`
+- `src/svgDraw.js` — Zero-dependency SVG `<path d>` & basic shapes dry-media renderer & measurer
+- `src/elements.js` — 65 reusable cultural, nature, landmark, transport, animal & food illustrations + `ELEMENT_BOUNDS`/`ELEMENT_META`/`elementBBox`
+- `src/mapPrimitives.js` — Projection, graticules, coastal waterlines, zebra border, cartouche, compass, inset box, and paper-tooth wash
+- `src/flags.js` — Built-in cartouche flags and flag spec renderer
+- `data/` — Bundled Natural Earth datasets (`admin_0`, `admin_1`, `rivers`, `lakes`, `populated_places`, `landforms`), rebuilt via `npm run build:data`
+- `examples/specs/` — Declarative YAML cultural map specs (`sichuan.yaml`, `italy.yaml`)
+- `examples/` — Programmatic JS atlas demos (`japan_cultural_map.js`, `korea_cultural_map.js`)
+- `engine/` — Dry-media & paper simulation engine (`kit/`, `lib/`, `fonts/` including `ZCOOLXiaoWei-Regular.ttf` & `OFL.txt`)
+- `SKILL.md` — Agent skill for iterative map authoring
 
 ## Credits & License
 
-MIT License. Country outlines are from [Natural Earth](https://www.naturalearthdata.com/) (public domain). Dry-media simulation (`engine/kit/`), parameterized character rig (`people.js`), and Hershey-derived `Kevin Serif` / `Kevin Sans` fonts originate from [kevintngo/statechart-art](https://github.com/kevintngo/statechart-art) (MIT).
+- **Code**: MIT License.
+- **Geographic Data**: Natural Earth (`admin_0`, `admin_1`, `rivers`, `lakes`, `populated_places`, `landforms`) from [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+- **Dry-Media Engine & Latin Fonts**: Dry-media simulation (`engine/kit/`), parameterized character rig (`people.js`), and Hershey-derived `Kevin Serif` / `Kevin Sans` fonts originate from [kevintngo/statechart-art](https://github.com/kevintngo/statechart-art) (MIT).
+- **Bundled CJK Font**: `ZCOOL XiaoWei` (`engine/fonts/ZCOOLXiaoWei-Regular.ttf`) is licensed under the **SIL Open Font License 1.1** — see [`engine/fonts/OFL.txt`](engine/fonts/OFL.txt) for full license terms.
