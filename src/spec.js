@@ -326,7 +326,7 @@ function validateSpec(inputSpec, opts = {}) {
           if (el.options && typeof el.options.pose === 'string' && !Object.hasOwn(POSES, el.options.pose)) {
             warnings.push(`elements[${idx}] references unknown person pose "${el.options.pose}"; falling back to "stand".`);
           }
-        } else if (!Object.hasOwn(EL, el.type)) {
+        } else if (!Object.hasOwn(EL.ELEMENT_BOUNDS, el.type) || typeof EL[el.type] !== 'function') {
           errors.push(`elements[${idx}] has unknown element type "${el.type}".`);
         }
 
@@ -874,14 +874,14 @@ function drawElementItem(map, el, pt, pal) {
   }
 
   const fn = map.el[el.type];
-  if (el.type === 'shinkansen') {
-    const angle = el.angle ?? rawOpts.angle ?? 0;
-    fn(pt[0], pt[1], el.scale ?? 1, angle, rawOpts);
-    return;
-  }
   if (el.type === 'koi') {
     const angle = el.angle ?? rawOpts.angle ?? 0;
     fn(pt[0], pt[1], el.scale ?? 1, angle);
+    return;
+  }
+  if (Object.hasOwn(EL.ELEMENT_META, el.type) && EL.ELEMENT_META[el.type].rotatable) {
+    const angle = el.angle ?? rawOpts.angle ?? 0;
+    fn(pt[0], pt[1], el.scale ?? 1, angle, rawOpts);
     return;
   }
   if (el.type === 'hanbok') {

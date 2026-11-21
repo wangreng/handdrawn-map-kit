@@ -816,6 +816,7 @@ module.exports = {
   PALETTE,
   at,
   part,
+  wash,
   createProjection,
   fitProjection,
   geoRings,

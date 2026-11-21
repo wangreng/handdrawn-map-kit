@@ -1,56 +1,19 @@
 'use strict';
 
+const { ELEMENT_BOUNDS: RAW_ELEMENT_BOUNDS } = require('./elements');
+
 const CELL_BORDER = 1;
 const CELL_LAND = 2;
 const CELL_OCCUPIED = 4;
 
-// Approximate unscaled [dx0, dy0, w, h] footprints (in mm relative to anchor)
-// for all 43 built-in elements in src/elements.js.
-const ELEMENT_BOUNDS = {
-  tree: [-4.8, -11.8, 9.6, 11.8],
-  sakura: [-6.3, -11.8, 12.8, 11.8],
-  pine: [-4.4, -12.2, 8.8, 12.2],
-  bamboo: [-7.4, -17.0, 14.8, 17.0],
-  mountain: [-16.0, -12.8, 32.0, 12.8],
-  onsen: [-10.6, -14.2, 21.2, 14.9],
-  torii: [-9.4, -14.2, 18.8, 14.2],
-  pagoda: [-8.6, -22.5, 17.2, 22.5],
-  castle: [-12.0, -22.5, 24.0, 22.5],
-  tokyoTower: [-5.8, -28.5, 11.6, 28.5],
-  house: [-7.6, -11.4, 15.2, 11.4],
-  lighthouse: [-7.8, -20.0, 15.6, 20.0],
-  shinkansen: [-16.0, -5.2, 33.0, 5.8],
-  sailboat: [-9.5, -15.5, 19.0, 15.9],
-  whale: [-10.0, -11.4, 24.2, 13.6],
-  shibaInu: [-6.8, -12.4, 14.6, 12.4],
-  deer: [-7.7, -17.2, 12.7, 17.2],
-  crane: [-7.6, -16.9, 14.0, 16.9],
-  koi: [-6.5, -2.5, 15.7, 5.0],
-  foodBowl: [-8.8, -12.0, 18.4, 12.0],
-  sushi: [-6.2, -7.4, 12.4, 7.6],
-  onigiri: [-5.4, -9.2, 10.8, 9.3],
-  dango: [-5.8, -12.2, 6.9, 14.1],
-  matcha: [-6.2, -13.0, 12.4, 13.0],
-  daruma: [-5.2, -11.1, 10.4, 11.2],
-  koinobori: [-0.9, -22.5, 14.1, 22.5],
-  origamiCrane: [-6.6, -5.8, 13.1, 6.3],
-  sumoRing: [-13.5, -14.9, 27.0, 16.6],
-  palaceGate: [-14.0, -18.2, 28.0, 18.2],
-  hillTower: [-10.0, -30.0, 20.0, 30.0],
-  hanok: [-10.2, -11.0, 20.4, 11.0],
-  onggi: [-9.3, -10.1, 19.1, 10.1],
-  bibimbap: [-8.8, -10.0, 17.6, 10.0],
-  gimbap: [-8.5, -6.1, 17.0, 6.2],
-  dolHareubang: [-4.6, -17.8, 9.2, 17.8],
-  mugunghwa: [-7.0, -5.4, 14.0, 10.5],
-  turtleShip: [-15.5, -19.5, 28.0, 20.4],
-  stoneObservatory: [-5.8, -14.8, 11.6, 14.8],
-  tiger: [-7.8, -11.6, 17.5, 11.6],
-  crab: [-8.4, -7.9, 16.8, 11.7],
-  tangerine: [-5.8, -6.8, 11.6, 6.8],
-  hahoeMask: [-4.4, -6.4, 8.8, 12.4],
-  hanbok: [-9.6, -42.0, 19.2, 42.3],
-};
+// Unscaled [dx0, dy0, w, h] footprints (in mm relative to anchor)
+// derived from src/elements.js ELEMENT_BOUNDS (single source of truth).
+const ELEMENT_BOUNDS = Object.fromEntries(
+  Object.entries(RAW_ELEMENT_BOUNDS).map(([name, b]) => [
+    name,
+    [b.x0, b.y0, +(b.x1 - b.x0).toFixed(4), +(b.y1 - b.y0).toFixed(4)],
+  ]),
+);
 
 // Unscaled [dx0, dy0, w, h] footprints for engine/lib/people.js POSES (default scale = 0.52).
 const PERSON_POSE_BOUNDS = {
@@ -151,9 +114,12 @@ function estimateElementBox(type, x, y, scale, opts = {}) {
     return normalizeBBox(x + dx0 * s, y + dy0 * s, (dx1 - dx0) * s, (dy1 - dy0) * s);
   }
 
-  const defaultScale = type === 'hanbok' ? 0.52 : 1;
+  const raw = Object.hasOwn(RAW_ELEMENT_BOUNDS, type) ? RAW_ELEMENT_BOUNDS[type] : null;
+  const defaultScale = (raw && raw.defaultScale) || 1;
   const s = scale ?? defaultScale;
-  const [dx0, dy0, w0, h0] = ELEMENT_BOUNDS[type] || DEFAULT_ELEMENT_BOUNDS;
+  const [dx0, dy0, w0, h0] = Object.hasOwn(ELEMENT_BOUNDS, type)
+    ? ELEMENT_BOUNDS[type]
+    : DEFAULT_ELEMENT_BOUNDS;
   const angle = typeof opts.angle === 'number' && Number.isFinite(opts.angle) ? opts.angle : 0;
 
   if (angle !== 0) {
