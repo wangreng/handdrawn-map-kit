@@ -614,5 +614,138 @@ test('regression: fromGeoJSON rejects hostile property values without throwing',
   assert.equal(parsed.countries[0].continent, null);
 });
 
+test('regression: resolveRegion rejects sparse 4-element bbox arrays', () => {
+  const isInvalidBBoxErr = (err) => (
+    err instanceof Error
+    && !(err instanceof TypeError)
+    && /Invalid bbox target/i.test(err.message)
+  );
+  // eslint-disable-next-line no-sparse-arrays
+  const sparse1 = [10, , 20, 30];
+  const sparse2 = new Array(4);
+  assert.throws(() => GEO.resolveRegion(sparse1), isInvalidBBoxErr);
+  assert.throws(() => GEO.resolveRegion(sparse2), isInvalidBBoxErr);
+  assert.throws(() => GEO.resolveRegion({ bbox: sparse1 }), isInvalidBBoxErr);
+  assert.throws(() => GEO.resolveRegion({ bbox: sparse2 }), isInvalidBBoxErr);
+});
+
+test('regression: mainBBoxOf handles non-numeric and non-finite ring coordinates without crashing or NaN', () => {
+  const boom = { valueOf() { throw new Error('boom'); } };
+  const badPoly = [[[Symbol('x'), 0], [boom, 1], [NaN, Infinity], [0, 0]]];
+  const goodPoly = [[[10, 20], [12, 20], [12, 22], [10, 22]]];
+
+  // Only bad polygon -> finite coordinates ignored or empty bbox, never throws
+  const onlyBad = GEO.mainBBoxOf([badPoly]);
+  assert.equal(onlyBad.length, 4);
+  assert.ok(!onlyBad.some((v) => Number.isNaN(v)));
+
+  // Bad polygon alongside valid polygon -> picks valid polygon cleanly
+  const mixed = GEO.mainBBoxOf([badPoly, goodPoly]);
+  assert.deepEqual(mixed, [10, 20, 12, 22]);
+});
+
+test('regression: geoLines skips Infinity/NaN/malformed points without hanging', () => {
+  const proj = M.createProjection({ lon0: 105, lat0: 30, cx: 150, cy: 100, scale: 0.2, rotDeg: 0 });
+  const P = { w: 300, h: 200 };
+
+  assert.deepEqual(M.geoLines(P, proj, [[[Infinity, 30], [105, 30]]]), []);
+  assert.deepEqual(M.geoLines(P, proj, [[[105, 30], [-Infinity, 30]]]), []);
+  assert.deepEqual(M.geoLines(P, proj, [[[NaN, 30], [105, NaN], [null, 30]]]), []);
+
+  // Line with valid points plus an Infinity point still projects the valid points
+  const runs = M.geoLines(P, proj, [[[100, 30], [Infinity, 30], [106, 31], [-Infinity, 32], [110, 32]]], { smooth: false });
+  assert.equal(runs.length, 1);
+  assert.ok(runs[0].length >= 2);
+});
+
+test('regression: fromGeoJSON skips null, undefined, and primitive feature entries', () => {
+  const poly = { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] };
+  const fc = {
+    type: 'FeatureCollection',
+    features: [
+      null,
+      undefined,
+      42,
+      'bad',
+      { type: 'Feature', properties: { ADM0_A3: 'OK1', NAME: 'Validland' }, geometry: poly },
+    ],
+  };
+  const parsed = GEO.fromGeoJSON(fc);
+  assert.equal(parsed.countries.length, 1);
+  assert.equal(parsed.countries[0].id, 'OK1');
+});
+
+test('regression: macro-region names and shared aliases resolve to full composite regions without shadowing individual units', () => {
+  const tuscanyIt = GEO.findAdmin1('Tuscany', { country: 'ITA' });
+  assert.equal(tuscanyIt?.id, 'ITA:Toscana');
+  assert.equal(tuscanyIt?.parts?.length, 10);
+
+  const tuscanyGlobal = GEO.findAdmin1('Tuscany');
+  assert.equal(tuscanyGlobal?.id, 'ITA:Toscana');
+  assert.equal(tuscanyGlobal?.parts?.length, 10);
+
+  const piemonte = GEO.findAdmin1('Piemonte', { country: 'ITA' });
+  assert.equal(piemonte?.id, 'ITA:Piemonte');
+  assert.equal(piemonte?.parts?.length, 8);
+
+  const piedmont = GEO.findAdmin1('Piedmont', { country: 'ITA' });
+  assert.equal(piedmont?.id, 'ITA:Piemonte');
+  assert.equal(piedmont?.parts?.length, 8);
+
+  const emilia = GEO.findAdmin1('Emilia-Romagna', { country: 'ITA' });
+  assert.equal(emilia?.id, 'ITA:Emilia-Romagna');
+  assert.equal(emilia?.parts?.length, 9);
+
+  const lombardy = GEO.findAdmin1('Lombardy', { country: 'ITA' });
+  assert.equal(lombardy?.id, 'ITA:Lombardia');
+  assert.equal(lombardy?.parts?.length, 12);
+
+  const brittany = GEO.findAdmin1('Brittany', { country: 'FRA' });
+  assert.equal(brittany?.id, 'FRA:Bretagne');
+  assert.equal(brittany?.parts?.length, 4);
+
+  const corsica = GEO.findAdmin1('Corsica', { country: 'FRA' });
+  assert.equal(corsica?.id, 'FRA:Corse');
+  assert.equal(corsica?.parts?.length, 2);
+
+  const sicilia = GEO.findAdmin1('Sicilia', { country: 'ITA' });
+  assert.equal(sicilia?.id, 'ITA:Sicily');
+  assert.equal(sicilia?.parts?.length, 9);
+
+  // Individual provinces and single-unit aliases remain intact
+  assert.equal(GEO.findAdmin1('Arezzo', { country: 'ITA' })?.id, 'IT-AR');
+  assert.equal(GEO.findAdmin1('Bologna', { country: 'ITA' })?.id, 'IT-BO');
+  assert.equal(GEO.findAdmin1('IT-AR')?.id, 'IT-AR');
+  assert.equal(GEO.findAdmin1('Sichuan')?.id, 'CN-SC');
+  assert.equal(GEO.findAdmin1('四川')?.id, 'CN-SC');
+  assert.equal(GEO.findAdmin1('Bavaria')?.id, 'DE-BY');
+});
+
+test('regression: fitProjection handles wrapped antimeridian bboxes and rejects zero-span bboxes', () => {
+  const frame = [10, 10, 290, 190];
+  const pPacific = M.fitProjection([170, -25, -170, -10], { frame });
+  assert.equal(pPacific.params.lon0, 180);
+  assert.ok(Number.isFinite(pPacific.params.scale) && pPacific.params.scale > 0);
+  assert.ok(Number.isFinite(pPacific.params.cx) && Number.isFinite(pPacific.params.cy));
+  for (const [lon, lat] of [[170, -25], [-170, -10], [180, -17.5]]) {
+    const [x, y] = pPacific(lon, lat);
+    assert.ok(x >= frame[0] - 0.5 && x <= frame[2] + 0.5, `x=${x} out of frame`);
+    assert.ok(y >= frame[1] - 0.5 && y <= frame[3] + 0.5, `y=${y} out of frame`);
+  }
+
+  const pAsym = M.fitProjection([170, -25, -160, -10], { frame });
+  assert.equal(pAsym.params.lon0, -175);
+  assert.ok(Number.isFinite(pAsym.params.scale) && pAsym.params.scale > 0);
+
+  const isInvalidBBoxErr = (err) => (
+    err instanceof Error
+    && !(err instanceof TypeError)
+    && /Invalid bbox/i.test(err.message)
+  );
+  assert.throws(() => M.fitProjection([10, 20, 10, 20], { frame }), isInvalidBBoxErr);
+  assert.throws(() => M.fitProjection([10, 20, 15, 20], { frame }), isInvalidBBoxErr);
+  assert.throws(() => M.fitProjection([10, 20, 10, 25], { frame }), isInvalidBBoxErr);
+});
+
 
 

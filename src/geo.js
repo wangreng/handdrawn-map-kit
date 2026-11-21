@@ -97,6 +97,7 @@ const extractSource = (v) => {
 function fromGeoJSON(geojson) {
   const countries = [];
   for (const f of geojson.features || []) {
+    if (!f || typeof f !== 'object') continue;
     const p = f.properties || {};
     const g = f.geometry;
     if (!g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) continue;
@@ -133,7 +134,14 @@ function ringArea(ring) {
   for (let i = 0; i < ring.length; i++) {
     const p = ring[i], q = ring[(i + 1) % ring.length];
     if (!Array.isArray(p) || !Array.isArray(q)) continue;
-    a += p[0] * q[1] - q[0] * p[1];
+    const px = p[0], py = p[1], qx = q[0], qy = q[1];
+    if (
+      typeof px !== 'number' || !Number.isFinite(px)
+      || typeof py !== 'number' || !Number.isFinite(py)
+      || typeof qx !== 'number' || !Number.isFinite(qx)
+      || typeof qy !== 'number' || !Number.isFinite(qy)
+    ) continue;
+    a += px * qy - qx * py;
   }
   return Math.abs(a) / 2;
 }
@@ -324,9 +332,7 @@ function resolveCountryCode(countryId, countrySource) {
 // 2. Admin 1 — States, Provinces, Regions
 // =========================================================================
 function indexAdmin1(raw, label) {
-  const byKey = new Map();
   const byCountry = new Map();
-  const byCountryKey = new Map();
   const groupBuckets = new Map(); // `${adm0}\0${norm(region)}` -> { adm0, region, parts }
 
   const entries = raw.regions.map((r) => {
@@ -372,30 +378,60 @@ function indexAdmin1(raw, label) {
     return { item, keys };
   });
 
+  const byPrimaryKey = new Map();
+  const byCountryPrimaryKey = new Map();
+  const byAliasKey = new Map();
+  const byCountryAliasKey = new Map();
+
   for (let tier = 0; tier < 5; tier++) {
+    const globalMap = tier <= 2 ? byPrimaryKey : byAliasKey;
+    const countryMaps = tier <= 2 ? byCountryPrimaryKey : byCountryAliasKey;
     for (const { item, keys } of entries) {
-      let cMap = byCountryKey.get(item.adm0);
-      if (!cMap) { cMap = new Map(); byCountryKey.set(item.adm0, cMap); }
+      let cMap = countryMaps.get(item.adm0);
+      if (!cMap) { cMap = new Map(); countryMaps.set(item.adm0, cMap); }
       for (const rawKey of keys[tier]) {
         const k = tier === 4 ? rawKey : norm(rawKey);
         if (!k) continue;
-        if (!byKey.has(k)) byKey.set(k, item);
+        if (!globalMap.has(k)) globalMap.set(k, item);
         if (!cMap.has(k)) cMap.set(k, item);
       }
     }
   }
 
   // Synthesize macro-region groups (e.g. France's Île-de-France, Italy's Toscana)
-  const byRegionGroup = new Map(); // global norm(region) -> composite
-  const byCountryRegionGroup = new Map(); // adm0 -> Map<norm(region), composite>
+  const byRegionGroup = new Map(); // global norm(region) & shared aliases -> composite
+  const byCountryRegionGroup = new Map(); // adm0 -> Map<key, composite>
+  const composites = [];
   for (const { adm0, region, rk, parts } of groupBuckets.values()) {
     const polygons = parts.flatMap((p) => p.polygons);
+    // For multi-part macro-regions, compute aliases shared across ALL constituent parts
+    let sharedKeys = [];
+    const sharedNames = [];
+    if (parts.length >= 2) {
+      const firstMap = new Map();
+      for (const rawName of parts[0].names) {
+        const k = norm(rawName);
+        if (k && !firstMap.has(k)) firstMap.set(k, rawName);
+      }
+      for (let i = 1; i < parts.length && firstMap.size; i++) {
+        const partKeys = new Set();
+        for (const rawName of parts[i].names) {
+          const k = norm(rawName);
+          if (k) partKeys.add(k);
+        }
+        for (const k of firstMap.keys()) {
+          if (!partKeys.has(k)) firstMap.delete(k);
+        }
+      }
+      sharedKeys = [...firstMap.keys()];
+      sharedNames.push(...firstMap.values());
+    }
     const composite = {
       id: `${adm0}:${region}`,
       iso: null,
       adm0,
       name: region,
-      names: [],
+      names: sharedNames,
       zh: null,
       local: null,
       region,
@@ -405,19 +441,34 @@ function indexAdmin1(raw, label) {
       mainBBox: mainBBoxOf(polygons),
       parts,
     };
+    composites.push({ adm0, rk, sharedKeys, composite });
+  }
+
+  // Pass 1: index canonical region names first so they win over shared aliases
+  for (const { adm0, rk, composite } of composites) {
     if (!byRegionGroup.has(rk)) byRegionGroup.set(rk, composite);
     let cg = byCountryRegionGroup.get(adm0);
     if (!cg) { cg = new Map(); byCountryRegionGroup.set(adm0, cg); }
     if (!cg.has(rk)) cg.set(rk, composite);
+  }
+  // Pass 2: index shared aliases for multi-part macro-regions
+  for (const { adm0, sharedKeys, composite } of composites) {
+    const cg = byCountryRegionGroup.get(adm0);
+    for (const sk of sharedKeys) {
+      if (!byRegionGroup.has(sk)) byRegionGroup.set(sk, composite);
+      if (!cg.has(sk)) cg.set(sk, composite);
+    }
   }
 
   return {
     _kind: 'admin1',
     source: raw.source || label,
     regions: entries.map((e) => e.item),
-    byKey,
+    byPrimaryKey,
+    byAliasKey,
     byCountry,
-    byCountryKey,
+    byCountryPrimaryKey,
+    byCountryAliasKey,
     byRegionGroup,
     byCountryRegionGroup,
   };
@@ -441,28 +492,22 @@ function findAdmin1(id, opts) {
   const q = norm(id);
   if (!q) return null;
   const stripped = stripCjkSuffix(q);
+  const lookup = (map) => (map ? (map.get(q) || (stripped ? map.get(stripped) : null) || null) : null);
 
   if (o.country) {
     const code = resolveCountryCode(o.country, o.countrySource);
     if (!code) return null;
-    const cMap = ds.byCountryKey.get(code);
-    if (cMap) {
-      const hit = cMap.get(q) || (stripped ? cMap.get(stripped) : null);
-      if (hit) return hit;
-    }
-    const cg = ds.byCountryRegionGroup.get(code);
-    if (cg) {
-      return cg.get(q) || (stripped ? cg.get(stripped) : null) || null;
-    }
-    return null;
+    return (
+      lookup(ds.byCountryPrimaryKey.get(code))
+      || lookup(ds.byCountryRegionGroup.get(code))
+      || lookup(ds.byCountryAliasKey.get(code))
+    );
   }
 
   return (
-    ds.byKey.get(q)
-    || (stripped ? ds.byKey.get(stripped) : null)
-    || ds.byRegionGroup.get(q)
-    || (stripped ? ds.byRegionGroup.get(stripped) : null)
-    || null
+    lookup(ds.byPrimaryKey)
+    || lookup(ds.byRegionGroup)
+    || lookup(ds.byAliasKey)
   );
 }
 
@@ -976,11 +1021,18 @@ function resolveRegion(target, opts) {
   const o = opts || {};
   // 1. Explicit [west, south, east, north] bbox array
   if (Array.isArray(target)) {
-    if (target.length !== 4 || !target.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    if (!isValidBBox(target)) {
+      if (
+        target.length === 4
+        && typeof target[0] === 'number' && Number.isFinite(target[0])
+        && typeof target[1] === 'number' && Number.isFinite(target[1])
+        && typeof target[2] === 'number' && Number.isFinite(target[2])
+        && typeof target[3] === 'number' && Number.isFinite(target[3])
+        && target[1] > target[3]
+      ) {
+        throw new Error(`Invalid bbox target: south (${target[1]}) must be <= north (${target[3]})`);
+      }
       throw new Error('Invalid bbox target: expected [west, south, east, north] of 4 finite numbers');
-    }
-    if (target[1] > target[3]) {
-      throw new Error(`Invalid bbox target: south (${target[1]}) must be <= north (${target[3]})`);
     }
     return { kind: 'bbox', bbox: target, mainBBox: target, feature: null };
   }

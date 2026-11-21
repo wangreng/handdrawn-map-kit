@@ -133,14 +133,33 @@ function createProjection(o = {}) {
 // Projection that fits the geographic box [west, south, east, north] inside the mm rectangle
 // `frame` = [x0, y0, x1, y1], centred, at the largest scale that still shows the whole box.
 function fitProjection(bbox, o = {}) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) {
+    throw new Error('Invalid bbox: expected [west, south, east, north] of 4 finite numbers');
+  }
   const [w, s, e, n] = bbox;
+  if (
+    typeof w !== 'number' || !Number.isFinite(w)
+    || typeof s !== 'number' || !Number.isFinite(s)
+    || typeof e !== 'number' || !Number.isFinite(e)
+    || typeof n !== 'number' || !Number.isFinite(n)
+    || s > n
+  ) {
+    throw new Error('Invalid bbox: expected [west, south, east, north] of 4 finite numbers with south <= north');
+  }
+  const eNorm = w > e ? e + 360 : e;
+  if (eNorm === w || n === s) {
+    throw new Error('Invalid bbox: zero-span bounding box cannot be fitted');
+  }
   const [x0, y0, x1, y1] = o.frame;
   const rotDeg = o.rotDeg ?? 0;
-  const unit = createProjection({ lon0: (w + e) / 2, lat0: (s + n) / 2, cx: 0, cy: 0, scale: 1, rotDeg });
+  const rawLon0 = (w + eNorm) / 2;
+  const lon0 = rawLon0 > 180 ? rawLon0 - 360 : rawLon0;
+  const lat0 = (s + n) / 2;
+  const unit = createProjection({ lon0, lat0, cx: 0, cy: 0, scale: 1, rotDeg });
   let ax = Infinity, ay = Infinity, bx = -Infinity, by = -Infinity;
   for (let i = 0; i <= 16; i++) {
     const t = i / 16;
-    for (const [lon, lat] of [[w + (e - w) * t, s], [w + (e - w) * t, n], [w, s + (n - s) * t], [e, s + (n - s) * t]]) {
+    for (const [lon, lat] of [[w + (eNorm - w) * t, s], [w + (eNorm - w) * t, n], [w, s + (n - s) * t], [eNorm, s + (n - s) * t]]) {
       const [x, y] = unit(lon, lat);
       if (x < ax) ax = x;
       if (x > bx) bx = x;
@@ -148,10 +167,15 @@ function fitProjection(bbox, o = {}) {
       if (y > by) by = y;
     }
   }
-  const scale = (o.zoom ?? 1) * Math.min((x1 - x0) / (bx - ax), (y1 - y0) / (by - ay));
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (!(dx > 0) || !(dy > 0) || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+    throw new Error('Invalid bbox: projected bounding box has zero or non-finite span');
+  }
+  const scale = (o.zoom ?? 1) * Math.min((x1 - x0) / dx, (y1 - y0) / dy);
   return createProjection({
-    lon0: (w + e) / 2,
-    lat0: (s + n) / 2,
+    lon0,
+    lat0,
     cx: (x0 + x1) / 2 - ((ax + bx) / 2) * scale,
     cy: (y0 + y1) / 2 - ((ay + by) / 2) * scale,
     scale,
@@ -353,14 +377,23 @@ function simplifyLine(pts, tol) {
 
 // Unwrap consecutive >180° longitude jumps along an open polyline so antimeridian crossings stay continuous.
 function unwrapLine(line) {
-  const out = new Array(line.length);
-  let prev = line[0][0];
-  out[0] = [prev, line[0][1]];
-  for (let i = 1; i < line.length; i++) {
-    let lon = line[i][0];
-    while (lon - prev > 180) lon -= 360;
-    while (lon - prev < -180) lon += 360;
-    out[i] = [lon, line[i][1]];
+  const out = [];
+  let prev = null;
+  for (let i = 0; i < line.length; i++) {
+    const pt = line[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    let lon = pt[0];
+    const lat = pt[1];
+    if (typeof lon !== 'number' || !Number.isFinite(lon) || typeof lat !== 'number' || !Number.isFinite(lat)) {
+      continue;
+    }
+    if (prev !== null) {
+      const d = lon - prev;
+      if (d > 180 || d < -180) {
+        lon -= Math.round(d / 360) * 360;
+      }
+    }
+    out.push([lon, lat]);
     prev = lon;
   }
   return out;
@@ -377,6 +410,7 @@ function geoLines(P, proj, lines, o) {
   for (const line of lines || []) {
     if (!line || line.length < 2) continue;
     const unwrapped = unwrapLine(line);
+    if (unwrapped.length < 2) continue;
     let projected;
     if (proj.ring) {
       projected = proj.ring(unwrapped);
