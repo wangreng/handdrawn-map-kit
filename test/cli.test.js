@@ -42,7 +42,9 @@ test('CLI inspect countries, elements, flags, and error on unknown kind', () => 
   const e = runCli(['inspect', 'elements', '--json']);
   assert.equal(e.status, 0, e.stderr);
   const elData = JSON.parse(e.stdout);
-  assert.equal(elData.elements.length, 43);
+  const expectedElementCount = Object.keys(require('../src/elements')).length;
+  assert.equal(elData.elements.length, expectedElementCount);
+  assert.ok(elData.elements.length >= 65);
   assert.equal(elData.poses.length, 10);
 
   const f = runCli(['inspect', 'flags', 'KOR', '--json']);

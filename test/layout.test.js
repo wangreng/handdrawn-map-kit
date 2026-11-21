@@ -44,8 +44,10 @@ test('bboxFromPoints and unionBBox produce valid canonical boxes', () => {
   assert.deepEqual(u, { x: 0, y: 0, w: 20, h: 20, x0: 0, y0: 0, x1: 20, y1: 20 });
 });
 
-test('ELEMENT_BOUNDS covers all 43 built-in elements and PERSON_POSE_BOUNDS covers all 10 poses', () => {
-  for (const name of Object.keys(EL)) {
+test('ELEMENT_BOUNDS covers all 65 built-in elements and PERSON_POSE_BOUNDS covers all 10 poses', () => {
+  const elementNames = Object.keys(EL);
+  assert.ok(elementNames.length >= 65);
+  for (const name of elementNames) {
     assert.ok(Array.isArray(ELEMENT_BOUNDS[name]), `Missing ELEMENT_BOUNDS for ${name}`);
     assert.equal(ELEMENT_BOUNDS[name].length, 4);
   }
@@ -55,7 +57,7 @@ test('ELEMENT_BOUNDS covers all 43 built-in elements and PERSON_POSE_BOUNDS cove
 
   // Hanbok defaults to scale 0.52 when scale is omitted
   const hb = estimateElementBox('hanbok', 100, 100);
-  assert.ok(Math.abs(hb.h - 42.3 * 0.52) < 1e-6);
+  assert.ok(Math.abs(hb.h - ELEMENT_BOUNDS.hanbok[3] * 0.52) < 1e-6);
 
   // Rotation support for shinkansen
   const sh0 = estimateElementBox('shinkansen', 100, 100, 1, { angle: 0 });
