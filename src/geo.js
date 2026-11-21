@@ -60,7 +60,12 @@ const fmtId = (v) => {
 };
 
 const minSuggestionLen = (q) => (HAS_CJK_RE.test(q) ? 2 : 3);
-const valid = (v) => v != null && v !== '' && fmtId(v) !== '-99';
+const finiteNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const valid = (v) => (
+  (typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)))
+  && v !== ''
+  && String(v) !== '-99'
+);
 
 function readJsonFile(filePath) {
   const buf = fs.readFileSync(filePath);
@@ -123,9 +128,11 @@ function unflatten(ring) {
 }
 
 function ringArea(ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return 0;
   let a = 0;
   for (let i = 0; i < ring.length; i++) {
     const p = ring[i], q = ring[(i + 1) % ring.length];
+    if (!Array.isArray(p) || !Array.isArray(q)) continue;
     a += p[0] * q[1] - q[0] * p[1];
   }
   return Math.abs(a) / 2;
@@ -134,8 +141,14 @@ function ringArea(ring) {
 // [west, south, east, north] of a list of polygons (outer rings only)
 function bboxOf(polygons) {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  if (!Array.isArray(polygons)) return [w, s, e, n];
   for (const poly of polygons) {
-    for (const [lon, lat] of poly[0]) {
+    if (!Array.isArray(poly) || !Array.isArray(poly[0])) continue;
+    for (const pt of poly[0]) {
+      if (!Array.isArray(pt) || pt.length < 2) continue;
+      const [lon, lat] = pt;
+      if (typeof lon !== 'number' || !Number.isFinite(lon)) continue;
+      if (typeof lat !== 'number' || !Number.isFinite(lat)) continue;
       if (lon < w) w = lon;
       if (lon > e) e = lon;
       if (lat < s) s = lat;
@@ -162,16 +175,20 @@ function bboxOfLines(lines) {
 // Leaves out far-flung parts (French Guiana, Alaska & Hawaii, Okinawa, Svalbard ...) so a map
 // fitted to it is not mostly ocean.
 function mainBBoxOf(polygons) {
-  if (!polygons || !polygons.length) return [Infinity, Infinity, -Infinity, -Infinity];
-  let big = polygons[0], bigArea = -1;
-  for (const poly of polygons) {
+  if (!Array.isArray(polygons) || !polygons.length) return [Infinity, Infinity, -Infinity, -Infinity];
+  const validPolys = polygons.filter((poly) => Array.isArray(poly) && Array.isArray(poly[0]) && poly[0].length > 0);
+  if (!validPolys.length) return [Infinity, Infinity, -Infinity, -Infinity];
+  let big = validPolys[0], bigArea = -1;
+  for (const poly of validPolys) {
     const a = ringArea(poly[0]);
     if (a > bigArea) { bigArea = a; big = poly; }
   }
   const [w, s, e, n] = bboxOf([big]);
+  if (!Number.isFinite(w)) return [Infinity, Infinity, -Infinity, -Infinity];
   const mx = Math.min(8, (e - w) * 0.5), my = Math.min(8, (n - s) * 0.5);
-  const near = polygons.filter((poly) => {
+  const near = validPolys.filter((poly) => {
     const [pw, ps, pe, pn] = bboxOf([poly]);
+    if (!Number.isFinite(pw)) return false;
     const cx = (pw + pe) / 2, cy = (ps + pn) / 2;
     return cx >= w - mx && cx <= e + mx && cy >= s - my && cy <= n + my;
   });
@@ -180,18 +197,21 @@ function mainBBoxOf(polygons) {
 
 const bboxIntersects = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 
-function shiftedBBoxes(bbox) {
-  if (!Array.isArray(bbox) || bbox.length !== 4) return [];
+function isValidBBox(bbox) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return false;
   const [w, s, e, n] = bbox;
-  if (
-    typeof w !== 'number' || !Number.isFinite(w)
-    || typeof s !== 'number' || !Number.isFinite(s)
-    || typeof e !== 'number' || !Number.isFinite(e)
-    || typeof n !== 'number' || !Number.isFinite(n)
-    || s > n
-  ) {
-    return [];
-  }
+  return (
+    typeof w === 'number' && Number.isFinite(w)
+    && typeof s === 'number' && Number.isFinite(s)
+    && typeof e === 'number' && Number.isFinite(e)
+    && typeof n === 'number' && Number.isFinite(n)
+    && s <= n
+  );
+}
+
+function shiftedBBoxes(bbox) {
+  if (!isValidBBox(bbox)) return [];
+  const [w, s, e, n] = bbox;
   // Support both extended [170, -25, 190, -10] and wrapped [170, -25, -170, -10] antimeridian boxes
   const eNorm = w > e ? e + 360 : e;
   return [-360, 0, 360].map((d) => [w + d, s, eNorm + d, n]);
@@ -548,13 +568,13 @@ function riversInBBox(bbox, opts) {
   if (!boxes.length) return [];
   const ds = loadRivers(o.source);
   const includeLC = o.includeLakeCenterlines === true;
-  const minRank = o.minRank;
-  const maxRank = o.maxRank;
+  const minRank = finiteNum(o.minRank);
+  const maxRank = finiteNum(o.maxRank);
   return ds.rivers
     .filter((r) => {
       if (!includeLC && r.kind === 'Lake Centerline') return false;
-      if (minRank != null && r.rank < minRank) return false;
-      if (maxRank != null && r.rank > maxRank) return false;
+      if (minRank !== null && r.rank < minRank) return false;
+      if (maxRank !== null && r.rank > maxRank) return false;
       return bboxTouches(r.bbox, boxes) && r.lines.some((line) => bboxTouches(bboxOfLines([line]), boxes));
     })
     .sort((a, b) => a.rank - b.rank);
@@ -645,12 +665,12 @@ function lakesInBBox(bbox, opts) {
   const boxes = shiftedBBoxes(bbox);
   if (!boxes.length) return [];
   const ds = loadLakes(o.source);
-  const maxRank = o.maxRank;
-  const minArea = o.minArea;
+  const maxRank = finiteNum(o.maxRank);
+  const minArea = finiteNum(o.minArea);
   return ds.lakes
     .filter((l) => {
-      if (maxRank != null && l.rank > maxRank) return false;
-      if (minArea != null && l.area < minArea) return false;
+      if (maxRank !== null && l.rank > maxRank) return false;
+      if (minArea !== null && l.area < minArea) return false;
       return bboxTouches(l.bbox, boxes) && l.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes));
     })
     .sort((a, b) => a.rank - b.rank || b.area - a.area);
@@ -784,8 +804,9 @@ function placesInBBox(bbox, opts) {
     if (!countryCode) return [];
   }
   const matchAdm1 = buildAdmin1Matcher(o.admin1, countryCode, o.admin1Source);
-  const maxRank = o.maxRank;
-  const minPop = o.minPop;
+  const maxRank = finiteNum(o.maxRank);
+  const minPop = finiteNum(o.minPop);
+  const limit = finiteNum(o.limit);
   const capitalsOnly = o.capitalsOnly === true;
 
   const out = ds.places.filter((p) => {
@@ -793,11 +814,11 @@ function placesInBBox(bbox, opts) {
     if (countryCode && p.adm0 !== countryCode) return false;
     if (matchAdm1 && !matchAdm1(p.adm1)) return false;
     if (capitalsOnly && !p.capital) return false;
-    if (maxRank != null && p.rank > maxRank) return false;
-    if (minPop != null && p.pop < minPop) return false;
+    if (maxRank !== null && p.rank > maxRank) return false;
+    if (minPop !== null && p.pop < minPop) return false;
     return true;
   });
-  return o.limit != null && o.limit >= 0 ? out.slice(0, o.limit) : out;
+  return limit !== null && limit >= 0 ? out.slice(0, limit) : out;
 }
 
 function findPlace(name, opts) {
@@ -909,7 +930,7 @@ function peaksInBBox(bbox, opts) {
   const boxes = shiftedBBoxes(bbox);
   if (!boxes.length) return [];
   const ds = loadLandforms(o.source);
-  const minElev = o.minElev;
+  const minElev = finiteNum(o.minElev);
   const kindOpt = Object.prototype.hasOwnProperty.call(o, 'kind') ? o.kind : 'mountain';
   let kindSet = null;
   if (kindOpt != null && kindOpt !== 'all') {
@@ -921,7 +942,7 @@ function peaksInBBox(bbox, opts) {
   return ds.peaks.filter((p) => {
     if (!pointInBBox(p.lon, p.lat, boxes)) return false;
     if (kindSet && !kindSet.has(typeof p.kind === 'string' ? p.kind.toLowerCase() : '')) return false;
-    if (minElev != null && (p.elevation == null || p.elevation < minElev)) return false;
+    if (minElev !== null && (p.elevation == null || p.elevation < minElev)) return false;
     return true;
   });
 }
@@ -931,7 +952,7 @@ function landformsInBBox(bbox, opts) {
   const boxes = shiftedBBoxes(bbox);
   if (!boxes.length) return [];
   const ds = loadLandforms(o.source);
-  const maxRank = o.maxRank;
+  const maxRank = finiteNum(o.maxRank);
   let kindSet = null;
   if (o.kinds != null) {
     const arr = Array.isArray(o.kinds) ? o.kinds : [o.kinds];
@@ -941,7 +962,7 @@ function landformsInBBox(bbox, opts) {
   }
   return ds.regions.filter((r) => {
     if (kindSet && !kindSet.has(typeof r.kind === 'string' ? r.kind.toLowerCase() : '')) return false;
-    if (maxRank != null && r.rank > maxRank) return false;
+    if (maxRank !== null && r.rank > maxRank) return false;
     return bboxTouches(r.bbox, boxes) && r.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes));
   });
 }
@@ -967,13 +988,21 @@ function resolveRegion(target, opts) {
   // 2. Object target: already-resolved, feature with polygons, or { country, admin1, bbox }
   if (target && typeof target === 'object') {
     if (target.kind && Array.isArray(target.bbox) && Array.isArray(target.mainBBox)) {
+      if (!isValidBBox(target.bbox) || !isValidBBox(target.mainBBox)) {
+        throw new Error('Invalid region target: bbox and mainBBox must be [west, south, east, north] of 4 finite numbers with south <= north');
+      }
       return target;
     }
     if (Array.isArray(target.polygons)) {
+      const bbox = target.bbox || bboxOf(target.polygons);
+      const mainBBox = target.mainBBox || mainBBoxOf(target.polygons);
+      if (!isValidBBox(bbox) || !isValidBBox(mainBBox)) {
+        throw new Error('Invalid region target: polygons produced an empty or invalid bounding box');
+      }
       return {
         kind: target.adm0 ? 'admin1' : 'country',
-        bbox: target.bbox || bboxOf(target.polygons),
-        mainBBox: target.mainBBox || mainBBoxOf(target.polygons),
+        bbox,
+        mainBBox,
         feature: target,
       };
     }

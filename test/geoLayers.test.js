@@ -509,4 +509,110 @@ test('regression: geoLines unwraps antimeridian-crossing polylines smoothly and 
   assert.deepEqual(farSide, []);
 });
 
+test('regression: *InBBox numeric filter options ignore hostile/non-finite values without throwing', () => {
+  const B = [-180, -90, 180, 90];
+  const bads = [
+    Object.create(null),
+    Symbol('x'),
+    { toString() { throw new Error('boom'); } },
+    { valueOf() { throw new Error('boomVal'); } },
+    NaN,
+    Infinity,
+    -Infinity,
+    '5',
+  ];
+
+  const baseRivers = GEO.riversInBBox(B);
+  const baseLakes = GEO.lakesInBBox(B);
+  const basePlaces = GEO.placesInBBox(B);
+  const basePeaks = GEO.peaksInBBox(B);
+  const baseLandforms = GEO.landformsInBBox(B);
+
+  for (const b of bads) {
+    assert.equal(GEO.riversInBBox(B, { minRank: b }).length, baseRivers.length);
+    assert.equal(GEO.riversInBBox(B, { maxRank: b }).length, baseRivers.length);
+    assert.equal(GEO.lakesInBBox(B, { maxRank: b }).length, baseLakes.length);
+    assert.equal(GEO.lakesInBBox(B, { minArea: b }).length, baseLakes.length);
+    assert.equal(GEO.placesInBBox(B, { maxRank: b }).length, basePlaces.length);
+    assert.equal(GEO.placesInBBox(B, { minPop: b }).length, basePlaces.length);
+    assert.equal(GEO.placesInBBox(B, { limit: b }).length, basePlaces.length);
+    assert.equal(GEO.peaksInBBox(B, { minElev: b }).length, basePeaks.length);
+    assert.equal(GEO.landformsInBBox(B, { maxRank: b }).length, baseLandforms.length);
+  }
+});
+
+test('regression: bboxOf, mainBBoxOf, and resolveRegion handle malformed polygons and invalid pre-resolved bboxes', () => {
+  const empty = [Infinity, Infinity, -Infinity, -Infinity];
+  assert.deepEqual(GEO.bboxOf(null), empty);
+  assert.deepEqual(GEO.bboxOf([]), empty);
+  assert.deepEqual(GEO.bboxOf([[]]), empty);
+  assert.deepEqual(GEO.bboxOf([[null, [1], [NaN, 0]]]), empty);
+
+  assert.deepEqual(GEO.mainBBoxOf(null), empty);
+  assert.deepEqual(GEO.mainBBoxOf([]), empty);
+  assert.deepEqual(GEO.mainBBoxOf([[]]), empty);
+  assert.deepEqual(GEO.mainBBoxOf([[null]]), empty);
+
+  const isInvalidRegionErr = (err) => (
+    err instanceof Error
+    && !(err instanceof TypeError)
+    && /Invalid region target/i.test(err.message)
+  );
+  assert.throws(() => GEO.resolveRegion({ polygons: [[]] }), isInvalidRegionErr);
+  assert.throws(() => GEO.resolveRegion({ polygons: [] }), isInvalidRegionErr);
+  assert.throws(
+    () => GEO.resolveRegion({ kind: 'bbox', bbox: [NaN, 0, 10, 10], mainBBox: [0, 0, 10, 10] }),
+    isInvalidRegionErr,
+  );
+  assert.throws(
+    () => GEO.resolveRegion({ kind: 'bbox', bbox: [0, 0, 10, 10], mainBBox: [0, 20, 10, 10] }),
+    isInvalidRegionErr,
+  );
+  assert.throws(
+    () => GEO.resolveRegion({ kind: 'bbox', bbox: [Infinity, 0, 10, 10], mainBBox: [0, 0, 10, 10] }),
+    isInvalidRegionErr,
+  );
+});
+
+test('regression: fromGeoJSON rejects hostile property values without throwing', () => {
+  const boom = { toString() { throw new Error('boom'); } };
+  const poly = { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] };
+  const fc = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: { ADM0_A3: Object.create(null), NAME: 'SkipMe' },
+        geometry: poly,
+      },
+      {
+        type: 'Feature',
+        properties: { ADM0_A3: Symbol('x'), NAME: boom },
+        geometry: poly,
+      },
+      {
+        type: 'Feature',
+        properties: {
+          ADM0_A3: Object.create(null),
+          ISO_A3: 'TST',
+          ISO_A3_EH: boom,
+          ISO_A2: Symbol('a2'),
+          NAME: 'Testland',
+          ADMIN: boom,
+          CONTINENT: Object.create(null),
+        },
+        geometry: poly,
+      },
+    ],
+  };
+
+  const parsed = GEO.fromGeoJSON(fc);
+  assert.equal(parsed.countries.length, 1);
+  assert.equal(parsed.countries[0].id, 'TST');
+  assert.equal(parsed.countries[0].name, 'Testland');
+  assert.equal(parsed.countries[0].iso2, null);
+  assert.equal(parsed.countries[0].continent, null);
+});
+
+
 
