@@ -116,8 +116,18 @@ test('elementBBox satisfies invariants, scaling, rotation AABB, hanbok defaultSc
   const hbExplicit = elementBBox('hanbok', 50, 60, 0.52);
   assert.deepEqual(hbDefault, hbExplicit);
 
-  // Unknown element throws
+  // Unknown element and Object.prototype property names throw cleanly
   assert.throws(() => elementBBox('nonExistentElement', 0, 0), /Unknown element/);
+  assert.throws(() => elementBBox('toString', 10, 10), /Unknown element/);
+  assert.throws(() => elementBBox('constructor', 10, 10), /Unknown element/);
+  assert.throws(() => elementBBox('__proto__', 10, 10), /Unknown element/);
+  assert.throws(() => elementBBox('hasOwnProperty', 10, 10), /Unknown element/);
+
+  // Non-finite numeric parameters throw cleanly
+  assert.throws(() => elementBBox('tree', 10, 10, NaN), RangeError);
+  assert.throws(() => elementBBox('tree', 10, 10, Infinity), RangeError);
+  assert.throws(() => elementBBox('tree', NaN, 10, 1), RangeError);
+  assert.throws(() => elementBBox('tree', 10, 10, 1, Infinity), RangeError);
 });
 
 test('every one of the 65 element functions returns its matching unified BBox (and hanbok preserves hand/head/L)', () => {

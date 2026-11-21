@@ -251,3 +251,56 @@ test('drawSvg and measureSvg handle empty/degenerate SVGs gracefully and render 
   m2.svg(icon, 20, 30, { w: 16 });
   assert.deepEqual(Buffer.from(m1.P.S.rgb), Buffer.from(m2.P.S.rgb));
 });
+
+test('parsePathD terminates cleanly when unexpected tokens follow Z or z', () => {
+  const s1 = parsePathD('M 0 0 L 10 10 Z 20 20');
+  assert.equal(s1.length, 1);
+  assert.equal(s1[0].closed, true);
+  assert.deepEqual(s1[0].pts, [
+    [0, 0],
+    [10, 10],
+  ]);
+
+  const s2 = parsePathD('M0 0L10 10z?');
+  assert.equal(s2.length, 1);
+  assert.equal(s2[0].closed, true);
+  assert.deepEqual(s2[0].pts, [
+    [0, 0],
+    [10, 10],
+  ]);
+
+  const s3 = parsePathD('M 0 0 L 10 10 Z x');
+  assert.equal(s3.length, 1);
+  assert.equal(s3[0].closed, true);
+});
+
+test('drawSvg validates array strokeDasharray entries (rejects negative, non-finite, and all-zero arrays)', () => {
+  const invalidDashes = [[-4, 6], [NaN, 2], [Infinity, 2], [0, 0], []];
+  for (const dash of invalidDashes) {
+    const mInvalid = createMap({ w: 40, h: 40, ppm: 4, ocean: false, border: false, seed: 'dash-val' });
+    const mSolid = createMap({ w: 40, h: 40, ppm: 4, ocean: false, border: false, seed: 'dash-val' });
+    const b1 = mInvalid.svg(
+      {
+        viewBox: [0, 0, 20, 20],
+        shapes: [{ type: 'line', x1: 2, y1: 10, x2: 18, y2: 10, stroke: '#1d1a1e', strokeWidth: 1.2, strokeDasharray: dash }],
+      },
+      20,
+      20,
+      { w: 16, anchor: 'center' }
+    );
+    const b2 = mSolid.svg(
+      {
+        viewBox: [0, 0, 20, 20],
+        shapes: [{ type: 'line', x1: 2, y1: 10, x2: 18, y2: 10, stroke: '#1d1a1e', strokeWidth: 1.2 }],
+      },
+      20,
+      20,
+      { w: 16, anchor: 'center' }
+    );
+    assertValidBBox(b1);
+    assert.deepEqual(b1, b2);
+    // Invalid array strokeDasharray falls back to null (solid stroke), matching omitted strokeDasharray
+    assert.deepEqual(Buffer.from(mInvalid.P.S.rgb), Buffer.from(mSolid.P.S.rgb));
+  }
+});
+

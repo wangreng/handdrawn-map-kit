@@ -147,10 +147,16 @@ const ELEMENT_META = {
 };
 
 function elementBBox(name, cx = 0, cy = 0, s, a = 0) {
+  if (typeof name !== 'string' || !Object.hasOwn(ELEMENT_BOUNDS, name)) {
+    throw new Error(`Unknown element: "${name}"`);
+  }
   const b = ELEMENT_BOUNDS[name];
-  if (!b) throw new Error(`Unknown element: "${name}"`);
   const sc = s ?? b.defaultScale ?? 1;
-  const T = at(cx, cy, sc, a || 0);
+  const ang = a ?? 0;
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(sc) || !Number.isFinite(ang)) {
+    throw new RangeError(`Invalid elementBBox arguments for "${name}": cx=${cx}, cy=${cy}, s=${sc}, a=${ang}`);
+  }
+  const T = at(cx, cy, sc, ang);
   const corners = T([
     [b.x0, b.y0],
     [b.x1, b.y0],

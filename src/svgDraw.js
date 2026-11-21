@@ -470,7 +470,7 @@ function parsePathD(d, opts = {}) {
     let cmd;
     if (CMD_RE.test(d[pos])) {
       cmd = d[pos++];
-    } else if (lastCmd) {
+    } else if (lastCmd && lastCmd !== 'Z' && lastCmd !== 'z') {
       cmd = lastCmd === 'M' ? 'L' : lastCmd === 'm' ? 'l' : lastCmd;
     } else {
       break;
@@ -781,7 +781,17 @@ function parseLength(v) {
 
 function parseDashArray(v) {
   if (!v || v === 'none') return null;
-  const nums = parseNums(String(v));
+  let nums;
+  if (Array.isArray(v)) {
+    nums = v.map((entry) => {
+      if (typeof entry === 'number') return entry;
+      if (typeof entry === 'string' && entry.trim() !== '') return Number(entry);
+      return NaN;
+    });
+    if (nums.some((n) => !Number.isFinite(n))) return null;
+  } else {
+    nums = parseNums(String(v));
+  }
   if (!nums.length) return null;
   if (nums.some((n) => n < 0)) return null;
   const sum = nums.reduce((acc, n) => acc + n, 0);
@@ -1034,9 +1044,7 @@ function normalizeInput(svgOrPaths) {
       fill: sh.fill !== undefined ? sh.fill : '#000000',
       stroke: sh.stroke !== undefined ? sh.stroke : 'none',
       strokeWidth: sh.strokeWidth ?? sh['stroke-width'] ?? 1,
-      strokeDasharray: Array.isArray(sh.strokeDasharray)
-        ? sh.strokeDasharray
-        : parseDashArray(sh.strokeDasharray ?? sh['stroke-dasharray']),
+      strokeDasharray: parseDashArray(sh.strokeDasharray ?? sh['stroke-dasharray']),
       strokeDashoffset: sh.strokeDashoffset ?? sh['stroke-dashoffset'] ?? 0,
       opacity: sh.opacity ?? 1,
       fillOpacity: sh.fillOpacity ?? sh['fill-opacity'] ?? 1,
