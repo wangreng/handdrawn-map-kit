@@ -418,3 +418,95 @@ test('regression: findRiver/getRiver and findLake/getLake accept empty options o
   assert.equal(GEO.getLake('Baikal', {}).name, 'Lake Baikal');
 });
 
+test('regression: non-string country/kind/kinds (Object.create(null), Symbol, throwing toString) never crash', () => {
+  const boom = { toString() { throw new Error('boom'); } };
+  const badValues = [Object.create(null), Symbol('x'), boom, { id: Symbol('id') }, { id: Object.create(null) }];
+  const bbox = [95, 25, 115, 36];
+  const isCleanUnknownError = (err) => (
+    err instanceof Error
+    && !(err instanceof TypeError)
+    && err.message !== 'boom'
+    && /Unknown/.test(err.message)
+  );
+
+  for (const bad of badValues) {
+    assert.equal(GEO.findAdmin1('Sichuan', { country: bad }), null);
+    assert.deepEqual(GEO.listAdmin1(bad), []);
+    assert.deepEqual(GEO.admin1InBBox(bbox, { country: bad }), []);
+    assert.throws(() => GEO.getAdmin1('Sichuan', { country: bad }), isCleanUnknownError);
+
+    assert.equal(GEO.findPlace('Chengdu', { country: bad }), null);
+    assert.deepEqual(GEO.placesInBBox(bbox, { country: bad }), []);
+    assert.throws(() => GEO.getPlace('Chengdu', { country: bad }), isCleanUnknownError);
+
+    assert.deepEqual(GEO.peaksInBBox([70, 20, 110, 45], { kind: bad }), []);
+    assert.deepEqual(GEO.peaksInBBox([70, 20, 110, 45], { kind: [bad] }), []);
+    assert.deepEqual(GEO.landformsInBBox([70, 20, 110, 45], { kinds: bad }), []);
+    assert.deepEqual(GEO.landformsInBBox([70, 20, 110, 45], { kinds: [bad] }), []);
+
+    assert.throws(() => GEO.resolveRegion('Sichuan', { country: bad }), isCleanUnknownError);
+    assert.throws(() => GEO.resolveRegion({ country: bad, admin1: 'Sichuan' }), isCleanUnknownError);
+    assert.throws(() => GEO.resolveRegion({ country: bad }), isCleanUnknownError);
+  }
+
+  // Verify createMap M2 helpers also handle bad country/kind/kinds cleanly without TypeError/boom
+  const map = API.createMap({ w: 150, h: 100, ppm: 2, seed: 'bad-opts' });
+  const proj = map.fitProjection('CN-SC');
+  for (const bad of [Object.create(null), Symbol('x'), boom]) {
+    assert.deepEqual(map.admin1(proj, { country: bad }), { focus: [], neighbors: [] });
+    assert.deepEqual(map.geoCities(proj, { country: bad }), []);
+    const mRes = map.geoMountains(proj, { peakKind: bad, kinds: bad });
+    assert.deepEqual(mRes, { peaks: [], ranges: [] });
+  }
+});
+
+test('regression: null options accepted across createMap M2 helpers and geoLines', () => {
+  const map = API.createMap({ w: 150, h: 100, ppm: 2, seed: 'null-opts' });
+  const proj = map.fitProjection('Sichuan', null);
+  assert.ok(map.admin1Rings(proj, 'CN-SC', null).length > 0);
+  assert.ok(map.admin1(proj, null).neighbors.length > 0);
+  assert.ok(Array.isArray(map.geoRivers(proj, null)));
+  assert.ok(Array.isArray(map.geoLakes(proj, null)));
+  assert.ok(Array.isArray(map.geoCities(proj, null)));
+  const m = map.geoMountains(proj, null);
+  assert.ok(Array.isArray(m.peaks) && Array.isArray(m.ranges));
+  const runs = M.geoLines({ w: 150, h: 100 }, proj, [[[100, 30], [105, 31]]], null);
+  assert.ok(runs.length > 0);
+});
+
+test('regression: geoLines unwraps antimeridian-crossing polylines smoothly and clips far-side lines', () => {
+  const proj = M.createProjection({ lon0: 179.5, lat0: 65, cx: 150, cy: 100, scale: 0.5, rotDeg: 0 });
+  const P = { w: 300, h: 200 };
+  const line = [[179, 65], [179.5, 65.1], [-179.5, 65.2], [-179, 65.3]];
+
+  const smoothRuns = M.geoLines(P, proj, [line]);
+  assert.equal(smoothRuns.length, 1);
+  const pts = smoothRuns[0];
+  assert.ok(pts.length >= 4);
+  for (let i = 1; i < pts.length; i++) {
+    const step = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    assert.ok(step <= 10, `expected continuous step <= 10 mm, got ${step.toFixed(2)} mm at index ${i}`);
+  }
+  // Both sides of lon0 = 179.5 (cx = 150) are preserved
+  assert.ok(pts[0][0] < 145, `expected western vertex < 145 mm, got ${pts[0][0]}`);
+  assert.ok(pts[pts.length - 1][0] > 180, `expected eastern vertex > 180 mm, got ${pts[pts.length - 1][0]}`);
+
+  // Raw (unsmoothed) preserves monotonically increasing x across ±180°
+  const rawRuns = M.geoLines(P, proj, [line], { smooth: false, simplify: 0 });
+  assert.equal(rawRuns.length, 1);
+  assert.equal(rawRuns[0].length, 4);
+  for (let i = 1; i < rawRuns[0].length; i++) {
+    assert.ok(rawRuns[0][i][0] > rawRuns[0][i - 1][0]);
+  }
+
+  // Reverse direction crossing ±180° also stays continuous
+  const revRuns = M.geoLines(P, proj, [line.slice().reverse()], { smooth: false, simplify: 0 });
+  assert.equal(revRuns.length, 1);
+  assert.equal(revRuns[0].length, 4);
+
+  // Far-side-of-globe line crossing lon0 - 180° (-0.5°) clips cleanly to []
+  const farSide = M.geoLines(P, proj, [[[1, 65], [-1, 65]]], { smooth: false, simplify: 0 });
+  assert.deepEqual(farSide, []);
+});
+
+

@@ -47,7 +47,8 @@ function createMap(opts = {}) {
     createProjection: M.createProjection,
     // Projection showing `target` (country, admin-1, { country, admin1 }, or [west, south, east, north])
     // as large as fits in `frame` (default: the whole map area inside the border)
-    fitProjection(target, o = {}) {
+    fitProjection(target, rawOpts) {
+      const o = rawOpts || {};
       const resolved = GEO.resolveRegion(target, o);
       const bbox = o.fullBBox ? resolved.bbox : resolved.mainBBox;
       const m = inner + (o.margin ?? 6);
@@ -84,9 +85,13 @@ function createMap(opts = {}) {
     },
 
     // Natural Earth admin-1 (states/provinces) outline as smoothed mm rings
-    admin1Rings: (proj, id, o = {}) => M.geoRings(P, proj, GEO.getAdmin1(id, o).polygons, o),
+    admin1Rings(proj, id, rawOpts) {
+      const o = rawOpts || {};
+      return M.geoRings(P, proj, GEO.getAdmin1(id, o).polygons, o);
+    },
     // Draw admin-1 regions (filled focus + neighbors, or borders-only overlay when no focus & no fill)
-    admin1(proj, o = {}) {
+    admin1(proj, rawOpts) {
+      const o = rawOpts || {};
       const focus = [].concat(o.focus || []).map((id) => GEO.getAdmin1(id, { country: o.country, source: o.source }));
       const ids = new Set(focus.map((r) => r.id));
       let neighbors = [];
@@ -126,7 +131,8 @@ function createMap(opts = {}) {
     },
 
     // Draw Natural Earth rivers within the map extent (or named rivers)
-    geoRivers(proj, o = {}) {
+    geoRivers(proj, rawOpts) {
+      const o = rawOpts || {};
       const rivers = o.names
         ? [].concat(o.names).map((n) => GEO.findRiver(n, o.source)).filter(Boolean)
         : GEO.riversInBBox(o.bbox || proj.extent([0, 0, w, h]), {
@@ -152,7 +158,8 @@ function createMap(opts = {}) {
     },
 
     // Draw Natural Earth lakes within the map extent (or named lakes)
-    geoLakes(proj, o = {}) {
+    geoLakes(proj, rawOpts) {
+      const o = rawOpts || {};
       const lakes = o.names
         ? [].concat(o.names).map((n) => GEO.findLake(n, o.source)).filter(Boolean)
         : GEO.lakesInBBox(o.bbox || proj.extent([0, 0, w, h]), {
@@ -176,7 +183,8 @@ function createMap(opts = {}) {
     },
 
     // Draw Natural Earth populated places within the map extent (or named places)
-    geoCities(proj, o = {}) {
+    geoCities(proj, rawOpts) {
+      const o = rawOpts || {};
       const places = o.names
         ? [].concat(o.names).map((n) => GEO.findPlace(n, { country: o.country, admin1: o.admin1, source: o.source })).filter(Boolean)
         : GEO.placesInBBox(o.bbox || proj.extent([0, 0, w, h]), {
@@ -212,7 +220,8 @@ function createMap(opts = {}) {
     },
 
     // Draw Natural Earth mountain peaks and range landform chains within the map extent
-    geoMountains(proj, o = {}) {
+    geoMountains(proj, rawOpts) {
+      const o = rawOpts || {};
       const bbox = o.bbox || proj.extent([0, 0, w, h]);
       const [x0, y0, x1, y1] = o.frame || [inner + 4, inner + 4, w - inner - 4, h - inner - 4];
       const s = o.scale ?? 1;

@@ -351,20 +351,53 @@ function simplifyLine(pts, tol) {
   return pts.filter((_, i) => keep[i]);
 }
 
+// Unwrap consecutive >180° longitude jumps along an open polyline so antimeridian crossings stay continuous.
+function unwrapLine(line) {
+  const out = new Array(line.length);
+  let prev = line[0][0];
+  out[0] = [prev, line[0][1]];
+  for (let i = 1; i < line.length; i++) {
+    let lon = line[i][0];
+    while (lon - prev > 180) lon -= 360;
+    while (lon - prev < -180) lon += 360;
+    out[i] = [lon, line[i][1]];
+    prev = lon;
+  }
+  return out;
+}
+
 // Project (lon, lat) open polylines to hand-drawable mm polylines.
 // Clipped to sheet frame via clipRuns, simplified, smoothed, and stubs shorter than `minLen` mm dropped.
-function geoLines(P, proj, lines, o = {}) {
-  const m = o.margin ?? 12;
-  const [x0, y0, x1, y1] = o.frame || [-m, -m, P.w + m, P.h + m];
-  const minLen = o.minLen ?? 1.5;
+function geoLines(P, proj, lines, o) {
+  const opts = o || {};
+  const m = opts.margin ?? 12;
+  const [x0, y0, x1, y1] = opts.frame || [-m, -m, P.w + m, P.h + m];
+  const minLen = opts.minLen ?? 1.5;
   const out = [];
   for (const line of lines || []) {
     if (!line || line.length < 2) continue;
-    const projected = proj.ring ? proj.ring(line) : proj.pts(line);
+    const unwrapped = unwrapLine(line);
+    let projected;
+    if (proj.ring) {
+      projected = proj.ring(unwrapped);
+    } else {
+      const lon0 = Number.isFinite(proj.lon0) ? proj.lon0 : proj.params?.lon0;
+      if (Number.isFinite(lon0)) {
+        let lo = Infinity, hi = -Infinity;
+        for (const [lon] of unwrapped) {
+          if (lon < lo) lo = lon;
+          if (lon > hi) hi = lon;
+        }
+        const shift = Math.round((lon0 - (lo + hi) / 2) / 360) * 360;
+        projected = proj.pts(shift ? unwrapped.map(([lon, lat]) => [lon + shift, lat]) : unwrapped);
+      } else {
+        projected = proj.pts(unwrapped);
+      }
+    }
     for (let run of clipRuns(projected, x0, y0, x1, y1)) {
       if (run.length < 2 || D.polyLen(run) < minLen) continue;
-      run = simplifyLine(run, o.simplify ?? 0.12);
-      out.push(o.smooth === false || run.length < 3 ? run : D.curve(run, false, o.step ?? 0.35));
+      run = simplifyLine(run, opts.simplify ?? 0.12);
+      out.push(opts.smooth === false || run.length < 3 ? run : D.curve(run, false, opts.step ?? 0.35));
     }
   }
   return out;

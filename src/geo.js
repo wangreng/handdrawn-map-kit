@@ -52,8 +52,15 @@ function stripCjkSuffix(k) {
   return stripped.length >= 2 && stripped !== k ? stripped : '';
 }
 
+const fmtId = (v) => {
+  if (typeof v === 'symbol') return v.toString();
+  try { return String(v); } catch {
+    try { return Object.prototype.toString.call(v); } catch { return '[object]'; }
+  }
+};
+
 const minSuggestionLen = (q) => (HAS_CJK_RE.test(q) ? 2 : 3);
-const valid = (v) => v != null && v !== '' && String(v) !== '-99';
+const valid = (v) => v != null && v !== '' && fmtId(v) !== '-99';
 
 function readJsonFile(filePath) {
   const buf = fs.readFileSync(filePath);
@@ -72,11 +79,6 @@ const isDatasetObject = (v) => (
   || Array.isArray(v.places)
   || Array.isArray(v.peaks)
 );
-
-const fmtId = (v) => {
-  if (typeof v === 'symbol') return v.toString();
-  try { return String(v); } catch { return Object.prototype.toString.call(v); }
-};
 
 const extractSource = (v) => {
   if (v && typeof v === 'object' && !Array.isArray(v) && !isDatasetObject(v)) {
@@ -284,9 +286,18 @@ function countriesInBBox(bbox, source) {
 
 function resolveCountryCode(countryId, countrySource) {
   if (!countryId) return null;
-  if (typeof countryId === 'object' && countryId.id) return String(countryId.id).toUpperCase();
+  if (typeof countryId === 'object') {
+    if (typeof countryId.id === 'string') {
+      const trimmed = countryId.id.trim();
+      return trimmed ? trimmed.toUpperCase() : null;
+    }
+    return null;
+  }
+  if (typeof countryId !== 'string') return null;
   const c = findCountry(countryId, countrySource);
-  return c ? c.id : String(countryId).trim().toUpperCase();
+  if (c) return c.id;
+  const trimmed = countryId.trim();
+  return trimmed ? trimmed.toUpperCase() : null;
 }
 
 // =========================================================================
@@ -413,6 +424,7 @@ function findAdmin1(id, opts) {
 
   if (o.country) {
     const code = resolveCountryCode(o.country, o.countrySource);
+    if (!code) return null;
     const cMap = ds.byCountryKey.get(code);
     if (cMap) {
       const hit = cMap.get(q) || (stripped ? cMap.get(stripped) : null);
@@ -766,7 +778,11 @@ function placesInBBox(bbox, opts) {
   const boxes = shiftedBBoxes(bbox);
   if (!boxes.length) return [];
   const ds = loadPlaces(o.source);
-  const countryCode = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
+  let countryCode = null;
+  if (o.country) {
+    countryCode = resolveCountryCode(o.country, o.countrySource);
+    if (!countryCode) return [];
+  }
   const matchAdm1 = buildAdmin1Matcher(o.admin1, countryCode, o.admin1Source);
   const maxRank = o.maxRank;
   const minPop = o.minPop;
@@ -785,7 +801,7 @@ function placesInBBox(bbox, opts) {
 }
 
 function findPlace(name, opts) {
-  if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
+  if (name && typeof name === 'object' && Number.isFinite(name.lon) && Number.isFinite(name.lat)) {
     return name;
   }
   const o = opts || {};
@@ -796,7 +812,11 @@ function findPlace(name, opts) {
   const candidates = ds.byKey.get(q) || (stripped ? ds.byKey.get(stripped) : null);
   if (!candidates || !candidates.length) return null;
 
-  const countryCode = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
+  let countryCode = null;
+  if (o.country) {
+    countryCode = resolveCountryCode(o.country, o.countrySource);
+    if (!countryCode) return null;
+  }
   const matchAdm1 = buildAdmin1Matcher(o.admin1, countryCode, o.admin1Source);
   return candidates.find((p) => (
     (!countryCode || p.adm0 === countryCode)
@@ -805,7 +825,7 @@ function findPlace(name, opts) {
 }
 
 function getPlace(name, opts) {
-  if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
+  if (name && typeof name === 'object' && Number.isFinite(name.lon) && Number.isFinite(name.lat)) {
     return name;
   }
   const o = opts || {};
@@ -894,11 +914,13 @@ function peaksInBBox(bbox, opts) {
   let kindSet = null;
   if (kindOpt != null && kindOpt !== 'all') {
     const arr = Array.isArray(kindOpt) ? kindOpt : [kindOpt];
-    kindSet = new Set(arr.map((k) => String(k).toLowerCase()));
+    const validKinds = arr.filter((k) => typeof k === 'string').map((k) => k.toLowerCase());
+    if (!validKinds.length) return [];
+    kindSet = new Set(validKinds);
   }
   return ds.peaks.filter((p) => {
     if (!pointInBBox(p.lon, p.lat, boxes)) return false;
-    if (kindSet && !kindSet.has(String(p.kind || '').toLowerCase())) return false;
+    if (kindSet && !kindSet.has(typeof p.kind === 'string' ? p.kind.toLowerCase() : '')) return false;
     if (minElev != null && (p.elevation == null || p.elevation < minElev)) return false;
     return true;
   });
@@ -913,10 +935,12 @@ function landformsInBBox(bbox, opts) {
   let kindSet = null;
   if (o.kinds != null) {
     const arr = Array.isArray(o.kinds) ? o.kinds : [o.kinds];
-    kindSet = new Set(arr.map((k) => String(k).toLowerCase()));
+    const validKinds = arr.filter((k) => typeof k === 'string').map((k) => k.toLowerCase());
+    if (!validKinds.length) return [];
+    kindSet = new Set(validKinds);
   }
   return ds.regions.filter((r) => {
-    if (kindSet && !kindSet.has(String(r.kind || '').toLowerCase())) return false;
+    if (kindSet && !kindSet.has(typeof r.kind === 'string' ? r.kind.toLowerCase() : '')) return false;
     if (maxRank != null && r.rank > maxRank) return false;
     return bboxTouches(r.bbox, boxes) && r.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes));
   });
