@@ -492,3 +492,123 @@ test('Group 7: drawInsetBox() measures CJK title via Lt.measure and fits inside 
   }
   assert.ok(pillInk > 30, 'inset box title pill should render CJK ink inside box bounds');
 });
+
+// =========================================================================
+// Group 8: Regression Tests (Signed Slant BBox, Bilingual Default Face,
+//          Narrow Cartouche Flag Clearance & Narrow InsetBox Containment)
+// =========================================================================
+test('Group 8: negative slant on extended Latin, CJK & mixed keeps ink in wb and matches measureBox', () => {
+  const cases = [
+    ['latin-360-neg-slant', 'TOKYO', { face: 'serif', size: 16, slant: -0.22, rotateDeg: 360, align: 'center', jitter: 0 }],
+    ['latin-45-neg-slant', 'TOKYO', { face: 'serif', size: 16, slant: -0.22, rotateDeg: 45, align: 'center', jitter: 0 }],
+    ['cjk-neg-slant', '成都', { face: 'serif', size: 16, slant: -0.22, align: 'center', jitter: 0 }],
+    ['cjk-pos-slant', '成都', { face: 'serif', size: 16, slant: 0.22, align: 'center', jitter: 0 }],
+    ['mixed-neg-slant', '成都 TOKYO', { face: 'serif', size: 14, slant: -0.22, align: 'center', jitter: 0 }],
+  ];
+
+  for (const [label, text, opts] of cases) {
+    const S = blankSheet(200, 120, 5, `slant-${label}`);
+    const mb = Lt.measureBox(text, { ...opts, x: 100, y: 60 });
+    const wb = Lt.write(S, text, 100, 60, opts);
+    assertValidBBox(mb, `mb:${label}`);
+    assertValidBBox(wb, `wb:${label}`);
+
+    // Actual inked pixels must stay within wb (allowing 1px rasterization tolerance)
+    let minX = S.W, maxX = -1, minY = S.H, maxY = -1;
+    for (let py = 0; py < S.H; py++) {
+      for (let px = 0; px < S.W; px++) {
+        if (S.fill[py * S.W + px] > 0) {
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
+        }
+      }
+    }
+    const tolMm = 1 / S.ppm + 0.05;
+    assert.ok(minX / S.ppm >= wb.x0 - tolMm, `${label}: inkX0 (${minX / S.ppm}) >= wb.x0 (${wb.x0})`);
+    assert.ok((maxX + 1) / S.ppm <= wb.x1 + tolMm, `${label}: inkX1 (${(maxX + 1) / S.ppm}) <= wb.x1 (${wb.x1})`);
+    assert.ok(minY / S.ppm >= wb.y0 - tolMm, `${label}: inkY0 (${minY / S.ppm}) >= wb.y0 (${wb.y0})`);
+    assert.ok((maxY + 1) / S.ppm <= wb.y1 + tolMm, `${label}: inkY1 (${(maxY + 1) / S.ppm}) <= wb.y1 (${wb.y1})`);
+
+    // measureBox must closely match write() (< 0.5 mm on every edge)
+    const maxDiff = Math.max(
+      Math.abs(mb.x0 - wb.x0),
+      Math.abs(mb.x1 - wb.x1),
+      Math.abs(mb.y0 - wb.y0),
+      Math.abs(mb.y1 - wb.y1),
+    );
+    assert.ok(maxDiff < 0.5, `${label}: measureBox vs write max diff (${maxDiff.toFixed(3)} mm) < 0.5 mm`);
+  }
+
+  // measureBox({ sub }) default face aligns with write({ sub }) / writeBilingual ('serif-bold')
+  const Sb = blankSheet(120, 60, 5, 'sub-default-face');
+  const mbSub = Lt.measureBox('成都', { x: 60, y: 25, size: 6, align: 'center', sub: 'Chengdu' });
+  const wbSub = Lt.write(Sb, '成都', 60, 25, { size: 6, align: 'center', sub: 'Chengdu' });
+  assert.ok(Math.abs(mbSub.w - wbSub.w) < 0.5, `measureBox({ sub }) width (${mbSub.w}) matches write (${wbSub.w})`);
+  assert.ok(Math.abs(mbSub.h - wbSub.h) < 0.5, `measureBox({ sub }) height (${mbSub.h}) matches write (${wbSub.h})`);
+});
+
+test('Group 8: drawCartouche() long CJK title + flag leaves zero title ink in flag region at w=56 and w=66', () => {
+  const title = '中华人民共和国四川省成都市';
+  for (const w of [56, 66]) {
+    const x = 10, y = 10, h = 46;
+    const flagX0 = x + w - 20.5;
+    const flagX1 = x + w - 7.5;
+
+    // Render full cartouche and capture exact title draw arguments & bbox
+    const map = createMap({ w: 120, h: 70, ppm: 6, ocean: false, border: false, seed: `cart-narrow-${w}` });
+    let titleCall = null;
+    const origText = map.P.text.bind(map.P);
+    map.P.text = (txt, tx, ty, o) => {
+      const bb = origText(txt, tx, ty, o);
+      if (!titleCall && Math.abs(ty - (y + 12.2)) < 0.2) {
+        titleCall = { txt, tx, ty, o, bb };
+      }
+      return bb;
+    };
+    map.cartouche(x, y, w, h, { country: title, flag: 'JP', lang: 'zh' });
+
+    assert.ok(titleCall, `w=${w}: title was drawn`);
+    assert.ok(
+      titleCall.bb.x1 < flagX0,
+      `w=${w}: title bbox right (${titleCall.bb.x1.toFixed(2)}) must stay left of flag (${flagX0})`,
+    );
+
+    // Independently verify pixel-level ink of the rendered title alone has 0 pixels inside [flagX0, flagX1]
+    const St = blankSheet(120, 70, 6, `cart-title-ink-${w}`);
+    Lt.write(St, titleCall.txt, titleCall.tx, titleCall.ty, titleCall.o);
+    const flagStats = inkStatsInBox(St, { x0: flagX0, y0: y, x1: flagX1, y1: y + 18 });
+    assert.equal(flagStats.insideCount, 0, `w=${w}: zero title ink pixels inside flag region [${flagX0}, ${flagX1}]`);
+  }
+});
+
+test('Group 8: drawInsetBox() 18-char CJK title in narrow w=18 box stays strictly inside pill and box', () => {
+  const x = 10, y = 10, w = 18, h = 18;
+  const title = '中华人民共和国四川省成都市武侯区锦里';
+  const map = createMap({ w: 60, h: 40, ppm: 6, ocean: false, border: false, seed: 'inset-narrow-18' });
+
+  let titleCall = null;
+  const origText = map.P.text.bind(map.P);
+  map.P.text = (txt, tx, ty, o) => {
+    const bb = origText(txt, tx, ty, o);
+    titleCall = { txt, tx, ty, o, bb };
+    return bb;
+  };
+  map.insetBox(x, y, w, h, title);
+
+  const pillX0 = x + 2.5;
+  const pillX1 = x + 2.5 + Math.max(4, w - 5);
+  assert.ok(titleCall, 'inset title was drawn');
+  assert.ok(titleCall.bb.x0 >= pillX0, `title x0 (${titleCall.bb.x0.toFixed(2)}) >= pillX0 (${pillX0})`);
+  assert.ok(titleCall.bb.x1 <= pillX1, `title x1 (${titleCall.bb.x1.toFixed(2)}) <= pillX1 (${pillX1})`);
+  assert.ok(titleCall.bb.x0 >= x && titleCall.bb.x1 <= x + w, 'title stays strictly inside inset box [x, x+w]');
+
+  // Pixel-level check on isolated title sheet
+  const St = blankSheet(60, 40, 6, 'inset-narrow-ink');
+  Lt.write(St, titleCall.txt, titleCall.tx, titleCall.ty, titleCall.o);
+  const stats = inkStatsInBox(St, { x0: pillX0, y0: y + 2.2, x1: pillX1, y1: y + 7.2 });
+  assert.ok(stats.insideCount > 10, 'inset title rendered visible ink inside pill');
+  assert.equal(stats.totalCount - stats.insideCount, 0, 'zero inset title ink pixels outside cream pill');
+});
+

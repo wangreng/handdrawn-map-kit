@@ -435,6 +435,39 @@ function rotatedCornersBBox(lx0, ly0, lx1, ly1, x, y, angle) {
   return makeBBox(minX, minY, maxX - minX, maxY - minY);
 }
 
+function measureExtendedSlantSpanMm(str, face, size, spacing, cjkScale, slant, alignOff) {
+  const chars = [...str];
+  const spMm = spacing * size;
+  let curX = -alignOff;
+  let lx0 = Infinity;
+  let lx1 = -Infinity;
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const script = detectScript(ch);
+    const isCjk = script !== 'latin';
+    const charSize = isCjk ? size * cjkScale : size;
+    const px = isCjk ? 100 * cjkScale : 100;
+    probe.font = fontForScript(face, script, px);
+    const m = probe.measureText(ch);
+    const cw = (m.width / 100) * size;
+    const isSpace = /\s/.test(ch);
+    const a = m.actualBoundingBoxAscent;
+    const d = m.actualBoundingBoxDescent;
+    const asc = isSpace ? 0 : (Number.isFinite(a) && a > 0 ? (a / 100) * size : charSize * (isCjk ? 0.88 : 0.85));
+    const desc = isSpace ? 0 : (Number.isFinite(d) && d >= 0 ? (d / 100) * size : charSize * (isCjk ? 0.16 : 0.22));
+    const effSlant = isSpace ? 0 : (isCjk ? slant * 0.55 : slant);
+    const pivot = charSize * 0.35;
+    const topShift = effSlant * (asc - pivot);
+    const botShift = -effSlant * (desc + pivot);
+    const cMinX = curX + Math.min(topShift, botShift);
+    const cMaxX = curX + cw + Math.max(topShift, botShift);
+    if (cMinX < lx0) lx0 = cMinX;
+    if (cMaxX > lx1) lx1 = cMaxX;
+    curX += cw + (i < chars.length - 1 ? spMm : 0);
+  }
+  return { lx0, lx1 };
+}
+
 function measureBox(text, o = {}) {
   const x = o.x ?? 0;
   const y = o.y ?? 0;
@@ -443,13 +476,13 @@ function measureBox(text, o = {}) {
   if (o.sub) {
     const layout = o.bilingualLayout || o.layout || 'stack';
     const size = o.size || 4;
-    const face = o.face || 'sans';
+    const face = o.face || 'serif-bold';
     const secondarySize = o.secondarySize ?? o.subSize ?? size * 0.68;
     const secondaryFace = o.secondaryFace ?? o.subFace ?? 'sans';
     const gap = o.gap ?? size * 0.35;
     const sep = o.sep ?? ' · ';
     const angle = resolveAngle(o);
-    const primOpts = { ...o, sub: undefined, bilingualLayout: undefined, layout: undefined };
+    const primOpts = { ...o, face, size, sub: undefined, bilingualLayout: undefined, layout: undefined };
     const secOpts = {
       ...primOpts,
       face: secondaryFace,
@@ -515,11 +548,9 @@ function measureBox(text, o = {}) {
       lx0 += Math.min(topShift, botShift);
       lx1 += Math.max(topShift, botShift);
     } else {
-      const effSlant = hasCJK(str) ? slant * 0.55 : slant;
-      const topShift = effSlant * ascent;
-      const botShift = -effSlant * descent;
-      lx0 += Math.min(0, topShift, botShift);
-      lx1 += Math.max(0, topShift, botShift);
+      const span = measureExtendedSlantSpanMm(str, face, size, spacing, cjkScale, slant, alignOff);
+      lx0 = span.lx0;
+      lx1 = span.lx1;
     }
   }
 
@@ -664,12 +695,17 @@ function write(S, text, x, y, o = {}) {
     probe.font = fontStr;
     const m = probe.measureText(ch);
     const cw1 = m.width;
-    const asc = Number.isFinite(m.actualBoundingBoxAscent) && m.actualBoundingBoxAscent > 0
-      ? m.actualBoundingBoxAscent
-      : charPx * (isCjk ? 0.88 : 0.85);
-    const desc = Number.isFinite(m.actualBoundingBoxDescent) && m.actualBoundingBoxDescent >= 0
-      ? m.actualBoundingBoxDescent
-      : charPx * (isCjk ? 0.16 : 0.22);
+    const isSpace = /\s/.test(ch);
+    const asc = isSpace
+      ? 0
+      : (Number.isFinite(m.actualBoundingBoxAscent) && m.actualBoundingBoxAscent > 0
+        ? m.actualBoundingBoxAscent
+        : charPx * (isCjk ? 0.88 : 0.85));
+    const desc = isSpace
+      ? 0
+      : (Number.isFinite(m.actualBoundingBoxDescent) && m.actualBoundingBoxDescent >= 0
+        ? m.actualBoundingBoxDescent
+        : charPx * (isCjk ? 0.16 : 0.22));
     if (asc > maxAscPx) maxAscPx = asc;
     if (desc > maxDescPx) maxDescPx = desc;
     charInfos.push({
@@ -679,6 +715,8 @@ function write(S, text, x, y, o = {}) {
       charPx,
       fontStr,
       w: cw1,
+      asc,
+      desc,
       synBold: needsSyntheticBold(face, script, o),
       effSlant: isCjk ? slant * 0.55 : slant,
       jy: 0,
@@ -700,9 +738,24 @@ function write(S, text, x, y, o = {}) {
   }
 
   const alignOff = o.align === 'center' ? totalW / 2 : o.align === 'right' ? totalW : 0;
-  const maxSlant = Math.abs(slant);
-  const lx0 = -alignOff - maxSlant * maxDescPx;
-  const lx1 = -alignOff + totalW + maxSlant * maxAscPx;
+  let lx0 = -alignOff;
+  let lx1 = -alignOff + totalW;
+  if (slant !== 0 && charInfos.length > 0) {
+    lx0 = Infinity;
+    lx1 = -Infinity;
+    let curX = -alignOff;
+    for (let i = 0; i < charInfos.length; i++) {
+      const ci = charInfos[i];
+      const pivot = ci.charPx * 0.35;
+      const topShift = ci.effSlant * (ci.asc - pivot);
+      const botShift = -ci.effSlant * (ci.desc + pivot);
+      const cMinX = curX + Math.min(topShift, botShift);
+      const cMaxX = curX + ci.w + Math.max(topShift, botShift);
+      if (cMinX < lx0) lx0 = cMinX;
+      if (cMaxX > lx1) lx1 = cMaxX;
+      curX += ci.w + (i < charInfos.length - 1 ? sp : 0);
+    }
+  }
   const ly0 = -maxAscPx;
   const ly1 = maxDescPx;
 

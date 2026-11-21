@@ -640,6 +640,37 @@ const CARTOUCHE_LOCALE = {
   },
 };
 
+// Fit text into maxW mm by scaling down to minSize, then truncating cleanly with '…' if still wider
+function fitTextToWidth(text, face, baseSize, maxW, minSize) {
+  const str = String(text ?? '');
+  if (!str || maxW <= 0) return { text: str, size: baseSize };
+  const measured = Lt.measure(str, face, baseSize);
+  if (measured <= maxW || measured <= 0) return { text: str, size: baseSize };
+
+  const scaled = baseSize * (maxW / measured);
+  if (scaled >= minSize) {
+    return { text: str, size: scaled };
+  }
+
+  const chars = [...str];
+  const ell = '…';
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const cand = chars.slice(0, mid).join('') + ell;
+    if (Lt.measure(cand, face, minSize) <= maxW) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const fitted = lo > 0 ? chars.slice(0, lo).join('') + ell : ell;
+  const fittedW = Lt.measure(fitted, face, minSize);
+  const finalSize = fittedW > maxW && fittedW > 0 ? minSize * (maxW / fittedW) : minSize;
+  return { text: fitted, size: finalSize };
+}
+
 // Framed Parchment Map Title, Country Facts, Legend & Graphical Scale Cartouche
 function drawCartouche(P, x, y, w, h, info = {}) {
   // Subtle drop shadow hatch
@@ -652,15 +683,12 @@ function drawCartouche(P, x, y, w, h, info = {}) {
     P.dot(rx, ry, 0.55, PALETTE.ochre);
   }
 
-  // Country Title + Waving National Flag (auto-scale title so CJK/long titles never collide with flag)
+  // Country Title + Waving National Flag (auto-scale/truncate title so CJK/long titles never collide with flag)
   if (info.country) {
-    let titleSize = info.titleSize ?? 9.2;
-    const maxTitleW = info.flag ? Math.max(12, w - 28.0) : Math.max(12, w - 11.0);
-    const measuredW = Lt.measure(info.country, 'serif-bold', titleSize);
-    if (measuredW > maxTitleW && measuredW > 0) {
-      titleSize = Math.max(3.5, titleSize * (maxTitleW / measuredW));
-    }
-    P.text(info.country, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: PALETTE.ink });
+    const baseTitleSize = info.titleSize ?? 9.2;
+    const maxTitleW = info.flag ? Math.max(4, w - 28.0) : Math.max(4, w - 11.0);
+    const { text: fittedTitle, size: titleSize } = fitTextToWidth(info.country, 'serif-bold', baseTitleSize, maxTitleW, 1.8);
+    P.text(fittedTitle, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: PALETTE.ink });
   }
   if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
 
@@ -754,16 +782,14 @@ function drawInsetBox(P, x, y, w, h, title) {
   P.ink([[x + 1.1, y + 1.1], [x + w - 1.1, y + 1.1], [x + w - 1.1, y + h - 1.1], [x + 1.1, y + h - 1.1], [x + 1.1, y + 1.1]], { nib: 0.12, color: PALETTE.ink });
   if (title) {
     const baseSize = 2.3;
-    const maxTw = Math.max(8, w - 5);
+    const maxTw = Math.max(4, w - 5);
     const measured = Lt.measure(title, 'serif-bold', baseSize);
     const padX = 5.5;
-    const tw = Math.min(maxTw, Math.max(8, measured + padX));
-    const maxTextW = Math.max(4, tw - 3.5);
-    const fitSize = measured > maxTextW && measured > 0
-      ? Math.max(1.3, baseSize * (maxTextW / measured))
-      : baseSize;
+    const tw = Math.min(maxTw, Math.max(Math.min(8, maxTw), measured + padX));
+    const maxTextW = Math.max(2, tw - 3.5);
+    const { text: fittedTitle, size: fitSize } = fitTextToWidth(title, 'serif-bold', baseSize, maxTextW, 1.2);
     part(P, D.rrect(x + 2.5, y + 2.2, x + 2.5 + tw, y + 7.2, 0.8), PALETTE.cream, { nib: 0.16 });
-    P.text(title, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center' });
+    P.text(fittedTitle, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center' });
   }
   return box;
 }
