@@ -175,3 +175,82 @@ test('renderSpec renders valid PNG, is deterministic by seed, supports border:fa
   await rNoBorder.save(out3);
   assert.deepEqual(pngSize(out3), { w: 240, h: 160 });
 });
+
+test('renderSpec renders YAML cartouche.title and unquoted YAML cartouche.facts without crashing', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handdrawn-map-cartouche-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const yamlWithTitle = path.join(dir, 'cartouche-title.yaml');
+  fs.writeFileSync(yamlWithTitle, [
+    'schemaVersion: 1',
+    'meta:',
+    '  id: cartouche-test',
+    '  seed: cartouche-seed-1',
+    'canvas:',
+    '  w: 120',
+    '  h: 80',
+    '  ppm: 2',
+    'cartouche:',
+    '  x: 12',
+    '  y: 12',
+    '  w: 60',
+    '  h: 36',
+    '  title: SOUTH KOREA',
+    '  subtitle: Land of the Morning Calm',
+    '  flag: KOR',
+    '  facts:',
+    '    - Capital: Seoul',
+    '    - Currency: Won (KRW)',
+    '    - "Population: 51M"',
+  ].join('\n'));
+
+  const outTitle = path.join(dir, 'with-title.png');
+  const rTitle = renderSpec(yamlWithTitle);
+  await rTitle.save(outTitle);
+  assert.deepEqual(pngSize(outTitle), { w: 240, h: 160 });
+  assert.equal(rTitle.diagnostics.schemaVersion, 1);
+
+  // Same spec using `country` instead of `title` must render identically
+  const specCountry = loadSpec(yamlWithTitle);
+  specCountry.cartouche.country = specCountry.cartouche.title;
+  delete specCountry.cartouche.title;
+  const outCountry = path.join(dir, 'with-country.png');
+  await renderSpec(specCountry).save(outCountry);
+  assert.ok(fs.readFileSync(outTitle).equals(fs.readFileSync(outCountry)), 'cartouche.title must render identically to cartouche.country');
+
+  // Omitting title/country must produce a different PNG (proving title was actually drawn)
+  const specBlank = loadSpec(yamlWithTitle);
+  delete specBlank.cartouche.title;
+  const outBlank = path.join(dir, 'without-title.png');
+  await renderSpec(specBlank).save(outBlank);
+  assert.equal(fs.readFileSync(outTitle).equals(fs.readFileSync(outBlank)), false, 'cartouche.title must visibly draw heading');
+});
+
+test('renderSpec preserves geo.land color alignment when an earlier entry has < 3 points', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handdrawn-map-geoland-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const validPoly = { pts: [[25, 25], [75, 25], [75, 55], [25, 55]], color: '#00aa00' };
+  const baseSpec = {
+    meta: { id: 'land-align', seed: 'land-seed-7' },
+    canvas: { w: 100, h: 80, ppm: 2 },
+    geo: { waterlines: false, land: [validPoly] },
+  };
+  const withDegenerate = {
+    meta: { id: 'land-align', seed: 'land-seed-7' },
+    canvas: { w: 100, h: 80, ppm: 2 },
+    geo: {
+      waterlines: false,
+      land: [
+        { pts: [[10, 10], [20, 20]], color: '#ff0000' },
+        validPoly,
+      ],
+    },
+  };
+
+  const outClean = path.join(dir, 'clean.png');
+  const outDegen = path.join(dir, 'degen.png');
+  await renderSpec(baseSpec).save(outClean);
+  await renderSpec(withDegenerate).save(outDegen);
+  assert.ok(fs.readFileSync(outClean).equals(fs.readFileSync(outDegen)), 'degenerate geo.land entry must not shift subsequent polygon colors');
+});

@@ -176,3 +176,39 @@ test('findEmptyRegions returns disjoint sea/land regions tagged by corner and to
   assert.ok(Math.abs(diag.summary.landCoveragePct + diag.summary.seaCoveragePct - 100) <= 0.2);
   assert.deepEqual(diag.warnings, ['sample warning']);
 });
+
+test('findEmptyRegions rounds inward so every returned region satisfies isFree even with fractional inner/gridStep', () => {
+  for (const opts of [
+    { w: 300, h: 200, inner: 8.333, gridStep: 2.0 },
+    { w: 300, h: 200, inner: 8.333, gridStep: 2.333 },
+  ]) {
+    const layout = createLayout(opts);
+    layout.setLandPolygons([[[120, 20], [180, 20], [180, 180], [120, 180]]]);
+    for (const terrain of ['sea', 'land']) {
+      const regions = layout.findEmptyRegions({ terrain, minW: 24, minH: 18, maxCount: 6 });
+      assert.ok(regions.length > 0, `Expected ${terrain} regions for ${JSON.stringify(opts)}`);
+      for (const reg of regions) {
+        assert.equal(
+          layout.isFree(reg.x, reg.y, reg.w, reg.h, { terrain }),
+          true,
+          `Region ${JSON.stringify(reg)} must pass isFree() for ${JSON.stringify(opts)}`,
+        );
+      }
+    }
+  }
+});
+
+test('overlaps handles raw boxes with negative w or h', () => {
+  const negA = { x: 40, y: 60, w: -30, h: -40 }; // [10..40, 20..60]
+  const posB = { x: 15, y: 25, w: 10, h: 10 };   // [15..25, 25..35]
+  const ov1 = overlaps(negA, posB, 0);
+  assert.ok(ov1);
+  assert.equal(ov1.areaMm2, 100);
+
+  const ov2 = overlaps(posB, negA, 0);
+  assert.ok(ov2);
+  assert.equal(ov2.areaMm2, 100);
+
+  // Disjoint negative-extent box returns null
+  assert.equal(overlaps({ x: 10, y: 10, w: -5, h: -5 }, posB, 0), null);
+});

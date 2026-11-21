@@ -149,8 +149,8 @@ cartouche:
   subtitle: Land of the Morning Calm
   flag: KOR
   facts:
-    - Capital: Seoul
-    - Currency: Won (KRW)
+    - "Capital: Seoul"
+    - "Currency: Won (KRW)"
 ```
 
 ## Iterative AI Authoring Loop (`--fast --diagnostics`)

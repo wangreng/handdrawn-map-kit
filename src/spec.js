@@ -68,6 +68,28 @@ function normalizeAliases(obj, warnings) {
   }
 }
 
+function normalizeCartoucheFacts(facts) {
+  if (!Array.isArray(facts)) return facts;
+  const out = [];
+  for (const entry of facts) {
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry === 'string') {
+      out.push(entry);
+    } else if (Array.isArray(entry)) {
+      if (entry.length >= 2) out.push(`${entry[0]}: ${entry[1]}`);
+      else if (entry.length === 1 && entry[0] !== null && entry[0] !== undefined) out.push(String(entry[0]));
+    } else if (isPlainObject(entry)) {
+      for (const [k, v] of Object.entries(entry)) {
+        if (v === null || v === undefined) continue;
+        out.push(`${k}: ${v}`);
+      }
+    } else {
+      out.push(String(entry));
+    }
+  }
+  return out;
+}
+
 function loadSpec(pathOrObj) {
   let raw;
   let sourcePath = null;
@@ -956,13 +978,14 @@ function renderSpec(specOrPath, opts = {}) {
 
   // Optional custom land polygons in spec.geo.land
   if (spec.geo && Array.isArray(spec.geo.land) && spec.geo.land.length > 0) {
-    const customRings = spec.geo.land.map((entry) => resolvePathPoints(entry, proj)).filter((r) => r.length >= 3);
+    const validLand = spec.geo.land
+      .map((entry) => ({ entry, pts: resolvePathPoints(entry, proj) }))
+      .filter((item) => item.pts.length >= 3);
+    const customRings = validLand.map((item) => item.pts);
     if (spec.geo.waterlines !== false && customRings.length) {
       map.coastWaterlines(customRings, isPlainObject(spec.geo.waterlines) ? spec.geo.waterlines : { shallowColor: pal.oceanShallow });
     }
-    spec.geo.land.forEach((entry, idx) => {
-      const pts = customRings[idx];
-      if (!pts) return;
+    validLand.forEach(({ entry, pts }) => {
       const color = resolveColor((!Array.isArray(entry) && entry.color) || pal.land, pal);
       const poly = map.land(pts, { color });
       allLandRings.push(poly);
@@ -1262,6 +1285,8 @@ function renderSpec(specOrPath, opts = {}) {
     const c = spec.cartouche;
     const info = {
       ...c,
+      country: c.country ?? c.title,
+      facts: normalizeCartoucheFacts(c.facts),
       mmPerKm: c.mmPerKm ?? (proj ? proj.mmPerKm : undefined),
     };
     map.cartouche(c.x, c.y, c.w, c.h, info);

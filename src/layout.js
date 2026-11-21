@@ -189,14 +189,23 @@ function estimateElementBox(type, x, y, scale, opts = {}) {
 
 function overlaps(a, b, pad = 0) {
   if (!a || !b) return null;
-  const ax0 = a.x0 ?? a.x;
-  const ay0 = a.y0 ?? a.y;
-  const ax1 = a.x1 ?? (ax0 + a.w);
-  const ay1 = a.y1 ?? (ay0 + a.h);
-  const bx0 = b.x0 ?? b.x;
-  const by0 = b.y0 ?? b.y;
-  const bx1 = b.x1 ?? (bx0 + b.w);
-  const by1 = b.y1 ?? (by0 + b.h);
+  const rawAx0 = a.x0 ?? a.x;
+  const rawAy0 = a.y0 ?? a.y;
+  const rawAx1 = a.x1 ?? (rawAx0 + a.w);
+  const rawAy1 = a.y1 ?? (rawAy0 + a.h);
+  const ax0 = Math.min(rawAx0, rawAx1);
+  const ax1 = Math.max(rawAx0, rawAx1);
+  const ay0 = Math.min(rawAy0, rawAy1);
+  const ay1 = Math.max(rawAy0, rawAy1);
+
+  const rawBx0 = b.x0 ?? b.x;
+  const rawBy0 = b.y0 ?? b.y;
+  const rawBx1 = b.x1 ?? (rawBx0 + b.w);
+  const rawBy1 = b.y1 ?? (rawBy0 + b.h);
+  const bx0 = Math.min(rawBx0, rawBx1);
+  const bx1 = Math.max(rawBx0, rawBx1);
+  const by0 = Math.min(rawBy0, rawBy1);
+  const by1 = Math.max(rawBy0, rawBy1);
 
   const ox = Math.min(ax1, bx1) - Math.max(ax0, bx0) + pad;
   const oy = Math.min(ay1, by1) - Math.max(ay0, by0) + pad;
@@ -522,8 +531,6 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
       const ry = Math.max(safeFrame[1], rect.r0 * step);
       const rx1 = Math.min(safeFrame[2], (rect.c0 + rect.rc) * step);
       const ry1 = Math.min(safeFrame[3], (rect.r0 + rect.rr) * step);
-      const rw = rx1 - rx;
-      const rh = ry1 - ry;
 
       // Mask out these cells so subsequent iterations find disjoint regions.
       for (let r = rect.r0; r < rect.r0 + rect.rr; r++) {
@@ -533,16 +540,25 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
         }
       }
 
+      // Round inward to 2 decimals so formatted bounds never cross safeFrame or occupied boundaries.
+      const x0 = Math.ceil(rx * 100 - 1e-9) / 100;
+      const y0 = Math.ceil(ry * 100 - 1e-9) / 100;
+      const x1 = Math.floor(rx1 * 100 + 1e-9) / 100;
+      const y1 = Math.floor(ry1 * 100 + 1e-9) / 100;
+      const rw = +(x1 - x0).toFixed(2);
+      const rh = +(y1 - y0).toFixed(2);
+
       if (rw < minW - 1e-6 || rh < minH - 1e-6) continue;
+      if (!isFree(x0, y0, rw, rh, { terrain })) continue;
 
       regions.push({
         terrain,
-        x: +rx.toFixed(2),
-        y: +ry.toFixed(2),
-        w: +rw.toFixed(2),
-        h: +rh.toFixed(2),
+        x: x0,
+        y: y0,
+        w: rw,
+        h: rh,
         areaMm2: +(rw * rh).toFixed(2),
-        corner: classifyCorner(rx, ry, rw, rh, safeFrame),
+        corner: classifyCorner(x0, y0, rw, rh, safeFrame),
       });
     }
 
