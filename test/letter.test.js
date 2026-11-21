@@ -612,3 +612,71 @@ test('Group 8: drawInsetBox() 18-char CJK title in narrow w=18 box stays strictl
   assert.equal(stats.totalCount - stats.insideCount, 0, 'zero inset title ink pixels outside cream pill');
 });
 
+test('Group 8: whitespace-padded CJK/Latin strings agree tightly between measureBox and write under slant & rotation', () => {
+  const texts = ['  成都  ', '  TOKYO  ', '   '];
+  const slants = [0, 0.22, -0.22];
+  const rotations = [0, 90];
+
+  for (const text of texts) {
+    for (const slant of slants) {
+      for (const rotateDeg of rotations) {
+        const opts = { face: 'sans', size: 12, slant, rotateDeg, jitter: 0 };
+        const S = blankSheet(160, 160, 6, `ws-${slant}-${rotateDeg}`);
+        const mb = Lt.measureBox(text, { ...opts, x: 80, y: 80 });
+        const wb = Lt.write(S, text, 80, 80, opts);
+        const allowEmpty = !/\S/.test(text);
+        assertValidBBox(mb, `mb:${JSON.stringify(text)}:${slant}:${rotateDeg}`, { allowEmpty });
+        assertValidBBox(wb, `wb:${JSON.stringify(text)}:${slant}:${rotateDeg}`, { allowEmpty });
+
+        const maxDiff = Math.max(
+          Math.abs(mb.x0 - wb.x0),
+          Math.abs(mb.x1 - wb.x1),
+          Math.abs(mb.y0 - wb.y0),
+          Math.abs(mb.y1 - wb.y1),
+        );
+        assert.ok(
+          maxDiff < 0.5,
+          `${JSON.stringify(text)} slant=${slant} rot=${rotateDeg}: maxDiff=${maxDiff.toFixed(3)} mm >= 0.5 mm`,
+        );
+      }
+    }
+  }
+});
+
+test('Group 8: inline bilingual with secondarySpacing aligns accurately for right and center', () => {
+  for (const align of ['right', 'center']) {
+    const opts = {
+      size: 8,
+      layout: 'inline',
+      align,
+      secondarySpacing: 0.5,
+      sub: 'CHENGDU',
+      jitter: 0,
+    };
+    const S = blankSheet(200, 80, 6, `bi-secsp-${align}`);
+    const anchorX = 120;
+    const anchorY = 40;
+    const mb = Lt.measureBox('成都', { ...opts, x: anchorX, y: anchorY });
+    const wb = Lt.write(S, '成都', anchorX, anchorY, opts);
+    assertValidBBox(mb, `mb-inline-${align}`);
+    assertValidBBox(wb, `wb-inline-${align}`);
+
+    const maxDiff = Math.max(
+      Math.abs(mb.x0 - wb.x0),
+      Math.abs(mb.x1 - wb.x1),
+      Math.abs(mb.y0 - wb.y0),
+      Math.abs(mb.y1 - wb.y1),
+    );
+    assert.ok(maxDiff < 0.5, `inline ${align}: measureBox vs write maxDiff=${maxDiff.toFixed(3)} mm`);
+
+    if (align === 'right') {
+      assert.ok(wb.x1 <= anchorX + 0.5, `inline right wb.x1 (${wb.x1.toFixed(3)}) must stay <= anchor (${anchorX})`);
+      assert.ok(mb.x1 <= anchorX + 0.5, `inline right mb.x1 (${mb.x1.toFixed(3)}) must stay <= anchor (${anchorX})`);
+    } else {
+      const wbMid = (wb.x0 + wb.x1) / 2;
+      assert.ok(Math.abs(wbMid - anchorX) < 0.5, `inline center midpoint (${wbMid.toFixed(3)}) ~ anchor (${anchorX})`);
+    }
+  }
+});
+
+

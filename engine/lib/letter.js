@@ -388,10 +388,12 @@ function measureMetricsMm(text, face, size, spacing, cjkScale) {
     probe.font = fontOf(face, 100);
     const m = probe.measureText(str);
     w = (m.width / 100) * size + spacing * size * Math.max(0, chars.length - 1);
-    const a = m.actualBoundingBoxAscent;
-    const d = m.actualBoundingBoxDescent;
-    ascent = Number.isFinite(a) && a > 0 ? (a / 100) * size : size * 0.85;
-    descent = Number.isFinite(d) && d >= 0 ? (d / 100) * size : size * 0.22;
+    if (/\S/.test(str)) {
+      const a = m.actualBoundingBoxAscent;
+      const d = m.actualBoundingBoxDescent;
+      ascent = Number.isFinite(a) && a > 0 ? (a / 100) * size : size * 0.85;
+      descent = Number.isFinite(d) && d >= 0 ? (d / 100) * size : size * 0.22;
+    }
   } else {
     const runs = segmentRuns(str);
     for (const run of runs) {
@@ -400,12 +402,14 @@ function measureMetricsMm(text, face, size, spacing, cjkScale) {
       probe.font = fontForScript(face, run.script, px);
       const m = probe.measureText(run.text);
       w += (m.width / 100) * size;
-      const a = m.actualBoundingBoxAscent;
-      const d = m.actualBoundingBoxDescent;
-      const ra = Number.isFinite(a) && a > 0 ? (a / 100) * size : size * (isCjk ? 0.88 * cjkScale : 0.85);
-      const rd = Number.isFinite(d) && d >= 0 ? (d / 100) * size : size * (isCjk ? 0.16 * cjkScale : 0.22);
-      if (ra > ascent) ascent = ra;
-      if (rd > descent) descent = rd;
+      if (/\S/.test(run.text)) {
+        const a = m.actualBoundingBoxAscent;
+        const d = m.actualBoundingBoxDescent;
+        const ra = Number.isFinite(a) && a > 0 ? (a / 100) * size : size * (isCjk ? 0.88 * cjkScale : 0.85);
+        const rd = Number.isFinite(d) && d >= 0 ? (d / 100) * size : size * (isCjk ? 0.16 * cjkScale : 0.22);
+        if (ra > ascent) ascent = ra;
+        if (rd > descent) descent = rd;
+      }
     }
     w += spacing * size * Math.max(0, chars.length - 1);
   }
@@ -493,7 +497,7 @@ function measureBox(text, o = {}) {
     if (layout === 'inline') {
       const w1 = measure(str, face, size, o.spacing || 0);
       const wSep = measure(sep, secondaryFace, secondarySize, 0);
-      const w2 = measure(String(o.sub), secondaryFace, secondarySize, 0);
+      const w2 = measure(String(o.sub), secondaryFace, secondarySize, o.secondarySpacing ?? 0);
       const totalW = w1 + wSep + w2;
       const align = o.align || 'left';
       const off = align === 'center' ? -totalW / 2 : align === 'right' ? -totalW : 0;
@@ -655,12 +659,17 @@ function write(S, text, x, y, o = {}) {
       }
     }
 
-    const ascPx = Number.isFinite(fullM.actualBoundingBoxAscent) && fullM.actualBoundingBoxAscent > 0
-      ? fullM.actualBoundingBoxAscent
-      : px * 0.85;
-    const descPx = Number.isFinite(fullM.actualBoundingBoxDescent) && fullM.actualBoundingBoxDescent >= 0
-      ? fullM.actualBoundingBoxDescent
-      : px * 0.22;
+    const isBlank = !/\S/.test(str);
+    const ascPx = isBlank
+      ? 0
+      : (Number.isFinite(fullM.actualBoundingBoxAscent) && fullM.actualBoundingBoxAscent > 0
+        ? fullM.actualBoundingBoxAscent
+        : px * 0.85);
+    const descPx = isBlank
+      ? 0
+      : (Number.isFinite(fullM.actualBoundingBoxDescent) && fullM.actualBoundingBoxDescent >= 0
+        ? fullM.actualBoundingBoxDescent
+        : px * 0.22);
     const v0 = base - ascPx;
     const v1 = base + descPx;
     const tx = (u, v) => (slant ? u - slant * v + px * slant * 1.05 : u);
@@ -718,7 +727,7 @@ function write(S, text, x, y, o = {}) {
       asc,
       desc,
       synBold: needsSyntheticBold(face, script, o),
-      effSlant: isCjk ? slant * 0.55 : slant,
+      effSlant: isSpace ? 0 : (isCjk ? slant * 0.55 : slant),
       jy: 0,
       jrot: 0,
     });
@@ -1061,7 +1070,7 @@ function writeBilingual(S, primary, secondary, x, y, o = {}) {
     const align = o.align || 'left';
     const w1 = measure(primStr, face, size, o.spacing || 0);
     const wSep = measure(sep, secondaryFace, secondarySize, 0);
-    const w2 = measure(secStr, secondaryFace, secondarySize, 0);
+    const w2 = measure(secStr, secondaryFace, secondarySize, o.secondarySpacing ?? 0);
     const totalW = w1 + wSep + w2;
     const off = align === 'center' ? -totalW / 2 : align === 'right' ? -totalW : 0;
     const cos = Math.cos(angle);
@@ -1069,7 +1078,7 @@ function writeBilingual(S, primary, secondary, x, y, o = {}) {
 
     const bb1 = write(S, primStr, x + off * cos, y + off * sin, { ...basePrimOpts, align: 'left' });
     if (sep) {
-      write(S, sep, x + (off + w1) * cos, y + (off + w1) * sin, { ...baseSecOpts, align: 'left' });
+      write(S, sep, x + (off + w1) * cos, y + (off + w1) * sin, { ...baseSecOpts, spacing: 0, align: 'left' });
     }
     const bb2 = write(S, secStr, x + (off + w1 + wSep) * cos, y + (off + w1 + wSep) * sin, {
       ...baseSecOpts,
