@@ -5,6 +5,7 @@ const D = require('../engine/lib/draw');
 const Lt = require('../engine/lib/letter');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
+const SVG = require('./svgDraw');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
 
@@ -31,7 +32,9 @@ function createMap(opts = {}) {
   let graticuleTicks = [];
   const el = {};
   for (const [name, fn] of Object.entries(EL)) {
-    el[name] = (...args) => fn(P, ...args);
+    if (typeof fn === 'function' && name !== 'elementBBox') {
+      el[name] = (...args) => fn(P, ...args);
+    }
   }
 
   return {
@@ -129,8 +132,9 @@ function createMap(opts = {}) {
     measureBox: Lt.measureBox,
     listFonts: Lt.listFonts,
 
-    // Characters & elements
+    // Characters, elements & SVG
     person: (x, y, scale = 0.52, o = {}) => person(P, x, y, scale, o),
+    svg: (svgOrPaths, x, y, o) => SVG.drawSvg(P, svgOrPaths, x, y, o),
     el,
 
     async save(filePath, saveOpts = {}) {
@@ -170,4 +174,13 @@ module.exports = {
   registerFont: Lt.registerFont,
   measureBox: Lt.measureBox,
   listFonts: Lt.listFonts,
+  // SVG dry-media renderer & parser
+  drawSvg: SVG.drawSvg,
+  parseSvg: SVG.parseSvg,
+  parsePathD: SVG.parsePathD,
+  measureSvg: SVG.measureSvg,
+  // Element bounds & metadata
+  ELEMENT_BOUNDS: EL.ELEMENT_BOUNDS,
+  ELEMENT_META: EL.ELEMENT_META,
+  elementBBox: EL.elementBBox,
 };
