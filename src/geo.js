@@ -1,15 +1,72 @@
 'use strict';
-// Country outlines from Natural Earth (public domain, https://www.naturalearthdata.com/).
-// The bundled dataset is the 1:50m "Admin 0 – Countries" layer; any other Natural Earth
-// countries GeoJSON (e.g. the 1:10m one) can be passed as `source` for more detail.
+// Geographic data from Natural Earth (public domain, https://www.naturalearthdata.com/).
+// Bundled datasets:
+//   - 1:50m Admin 0 – Countries (`data/ne_50m_admin_0_countries.json`)
+//   - 1:10m Admin 1 – States & Provinces, simplified (`data/ne_admin_1_states_provinces.json.gz`)
+//   - 1:50m Rivers & Lake Centerlines (`data/ne_50m_rivers.json.gz`)
+//   - 1:50m Lakes & Reservoirs (`data/ne_50m_lakes.json.gz`)
+//   - 1:50m Populated Places (`data/ne_50m_populated_places.json.gz`)
+//   - 1:50m Geography Regions & Elevation Points (`data/ne_50m_landforms.json.gz`)
+// All layers are loaded lazily on first use and cached per source.
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
-const BUNDLED = path.join(__dirname, '..', 'data', 'ne_50m_admin_0_countries.json');
-const cache = new Map();
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const BUNDLED = path.join(DATA_DIR, 'ne_50m_admin_0_countries.json');
+const BUNDLED_ADMIN1 = path.join(DATA_DIR, 'ne_admin_1_states_provinces.json.gz');
+const BUNDLED_RIVERS = path.join(DATA_DIR, 'ne_50m_rivers.json.gz');
+const BUNDLED_LAKES = path.join(DATA_DIR, 'ne_50m_lakes.json.gz');
+const BUNDLED_PLACES = path.join(DATA_DIR, 'ne_50m_populated_places.json.gz');
+const BUNDLED_LANDFORMS = path.join(DATA_DIR, 'ne_50m_landforms.json.gz');
 
-const norm = (s) => String(s).normalize('NFD').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+const caches = {
+  countries: new Map(),
+  admin1: new Map(),
+  rivers: new Map(),
+  lakes: new Map(),
+  places: new Map(),
+  landforms: new Map(),
+};
+
+// Unicode/CJK-safe normalization:
+// NFKC folds fullwidth punctuation/alphanumerics, NFD + [\u0300-\u036f] strips Latin combining
+// diacritics without removing Japanese dakuten/handakuten, and NFC recomposes Korean Hangul.
+const norm = (s) => {
+  if (s == null || typeof s === 'object') return '';
+  return String(s)
+    .normalize('NFKC')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .toLowerCase();
+};
+
+const CJK_SUFFIX_RE = /(?:维吾尔自治区|回族自治区|壮族自治区|特别行政区|自治区|특별자치시|특별자치도|특별시|광역시|[省市县区都府県도시])$/;
+const HAS_CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+function stripCjkSuffix(k) {
+  if (!k) return '';
+  const stripped = k.replace(CJK_SUFFIX_RE, '');
+  return stripped.length >= 2 && stripped !== k ? stripped : '';
+}
+
+const minSuggestionLen = (q) => (HAS_CJK_RE.test(q) ? 2 : 3);
 const valid = (v) => v != null && v !== '' && String(v) !== '-99';
+
+function readJsonFile(filePath) {
+  const buf = fs.readFileSync(filePath);
+  const isGz = filePath.endsWith('.gz') || (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b);
+  const text = isGz ? zlib.gunzipSync(buf).toString('utf8') : buf.toString('utf8');
+  return JSON.parse(text);
+}
+
+const extractSource = (v) => (
+  v && typeof v === 'object' && !Array.isArray(v) && Object.prototype.hasOwnProperty.call(v, 'source')
+    ? v.source
+    : v
+);
 
 // Natural Earth GeoJSON FeatureCollection -> { countries: [{ id, name, names, iso2, continent, polygons }] }
 function fromGeoJSON(geojson) {
@@ -68,10 +125,24 @@ function bboxOf(polygons) {
   return [w, s, e, n];
 }
 
+function bboxOfLines(lines) {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const line of lines) {
+    for (const [lon, lat] of line) {
+      if (lon < w) w = lon;
+      if (lon > e) e = lon;
+      if (lat < s) s = lat;
+      if (lat > n) n = lat;
+    }
+  }
+  return [w, s, e, n];
+}
+
 // Bounding box of the "home" territory: the largest polygon plus everything near it.
 // Leaves out far-flung parts (French Guiana, Alaska & Hawaii, Okinawa, Svalbard ...) so a map
 // fitted to it is not mostly ocean.
 function mainBBoxOf(polygons) {
+  if (!polygons || !polygons.length) return [Infinity, Infinity, -Infinity, -Infinity];
   let big = polygons[0], bigArea = -1;
   for (const poly of polygons) {
     const a = ringArea(poly[0]);
@@ -87,7 +158,27 @@ function mainBBoxOf(polygons) {
   return bboxOf(near);
 }
 
-function index(raw, label) {
+const bboxIntersects = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+
+function shiftedBBoxes(bbox) {
+  const [w, s, e, n] = bbox;
+  // Support both extended [170, -25, 190, -10] and wrapped [170, -25, -170, -10] antimeridian boxes
+  const eNorm = w > e ? e + 360 : e;
+  return [-360, 0, 360].map((d) => [w + d, s, eNorm + d, n]);
+}
+
+function bboxTouches(featureBBox, queryBoxes) {
+  return queryBoxes.some((box) => bboxIntersects(featureBBox, box));
+}
+
+function pointInBBox(lon, lat, queryBoxes) {
+  return queryBoxes.some((box) => lon >= box[0] && lon <= box[2] && lat >= box[1] && lat <= box[3]);
+}
+
+// =========================================================================
+// 1. Admin 0 — Countries (preserved 100% backward compatible)
+// =========================================================================
+function indexCountries(raw, label) {
   const byKey = new Map();
   const countries = raw.countries.map((c) => {
     const polygons = raw.flat ? c.polygons.map((poly) => poly.map(unflatten)) : c.polygons;
@@ -111,7 +202,7 @@ function index(raw, label) {
       }
     }
   }
-  return { source: raw.source || label, countries: countries.map((c) => c.country), byKey };
+  return { _kind: 'countries', source: raw.source || label, countries: countries.map((c) => c.country), byKey };
 }
 
 // Load a country dataset. `source` may be omitted (bundled Natural Earth 1:50m), a path to a
@@ -120,12 +211,12 @@ function index(raw, label) {
 function loadCountries(source) {
   if (source && source.byKey) return source;
   const key = source ?? BUNDLED;
-  if (cache.has(key)) return cache.get(key);
-  const raw = typeof key === 'string' ? JSON.parse(fs.readFileSync(key, 'utf8')) : key;
+  if (caches.countries.has(key)) return caches.countries.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
   const data = raw.type === 'FeatureCollection' ? fromGeoJSON(raw) : raw;
   if (!Array.isArray(data.countries)) throw new Error('Not a Natural Earth countries dataset');
-  const ds = index(data, typeof key === 'string' ? path.basename(key) : 'custom');
-  cache.set(key, ds);
+  const ds = indexCountries(data, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.countries.set(key, ds);
   return ds;
 }
 
@@ -141,8 +232,9 @@ function getCountry(id, source) {
   const hit = ds.byKey.get(norm(id));
   if (hit) return hit;
   const q = norm(id);
+  const minLen = minSuggestionLen(q);
   const near = ds.countries
-    .filter((c) => q.length >= 3 && (norm(c.name).includes(q) || q.includes(norm(c.name))))
+    .filter((c) => q.length >= minLen && (norm(c.name).includes(q) || q.includes(norm(c.name))))
     .slice(0, 5)
     .map((c) => `${c.name} (${c.id})`);
   throw new Error(`Unknown country "${id}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
@@ -152,18 +244,733 @@ function listCountries(source) {
   return loadCountries(source).countries.map(({ id, name, iso2, continent }) => ({ id, name, iso2, continent }));
 }
 
-const bboxIntersects = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
-
 // All countries with at least one polygon whose bounding box touches [west, south, east, north].
 // The box may run past +/-180 (a frame spanning the antimeridian); countries are matched a turn either side.
 function countriesInBBox(bbox, source) {
-  const [w, s, e, n] = bbox;
-  const boxes = [-360, 0, 360].map((d) => [w + d, s, e + d, n]);
-  const hit = (b) => boxes.some((box) => bboxIntersects(b, box));
-  return loadCountries(source).countries.filter((c) => hit(c.bbox) && c.polygons.some((poly) => hit(bboxOf([poly]))));
+  const boxes = shiftedBBoxes(bbox);
+  return loadCountries(source).countries.filter(
+    (c) => bboxTouches(c.bbox, boxes) && c.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes)),
+  );
+}
+
+function resolveCountryCode(countryId, countrySource) {
+  if (!countryId) return null;
+  if (typeof countryId === 'object' && countryId.id) return String(countryId.id).toUpperCase();
+  const c = findCountry(countryId, countrySource);
+  return c ? c.id : String(countryId).trim().toUpperCase();
+}
+
+// =========================================================================
+// 2. Admin 1 — States, Provinces, Regions
+// =========================================================================
+function indexAdmin1(raw, label) {
+  const byKey = new Map();
+  const byCountry = new Map();
+  const byCountryKey = new Map();
+  const groupBuckets = new Map(); // `${adm0}\0${norm(region)}` -> { adm0, region, parts }
+
+  const entries = raw.regions.map((r) => {
+    const polygons = raw.flat ? r.polygons.map((poly) => poly.map(unflatten)) : r.polygons;
+    const item = {
+      id: r.id,
+      iso: r.iso || null,
+      adm0: r.adm0,
+      name: r.name,
+      names: r.names || [],
+      zh: r.zh || null,
+      local: r.local || null,
+      region: r.region || null,
+      type: r.type || null,
+      polygons,
+      bbox: bboxOf(polygons),
+      mainBBox: mainBBoxOf(polygons),
+    };
+    if (!byCountry.has(item.adm0)) byCountry.set(item.adm0, []);
+    byCountry.get(item.adm0).push(item);
+
+    if (item.region) {
+      const rk = norm(item.region);
+      if (rk) {
+        const gk = `${item.adm0}\0${rk}`;
+        if (!groupBuckets.has(gk)) groupBuckets.set(gk, { adm0: item.adm0, region: item.region, rk, parts: [] });
+        groupBuckets.get(gk).parts.push(item);
+      }
+    }
+
+    const stripped = [];
+    for (const s of [item.zh, item.local, ...item.names]) {
+      const sk = stripCjkSuffix(norm(s));
+      if (sk) stripped.push(sk);
+    }
+    const keys = [
+      [item.id],
+      [item.name],
+      [item.zh, item.local, item.iso].filter(Boolean),
+      item.names,
+      stripped,
+    ];
+    return { item, keys };
+  });
+
+  for (let tier = 0; tier < 5; tier++) {
+    for (const { item, keys } of entries) {
+      let cMap = byCountryKey.get(item.adm0);
+      if (!cMap) { cMap = new Map(); byCountryKey.set(item.adm0, cMap); }
+      for (const rawKey of keys[tier]) {
+        const k = tier === 4 ? rawKey : norm(rawKey);
+        if (!k) continue;
+        if (!byKey.has(k)) byKey.set(k, item);
+        if (!cMap.has(k)) cMap.set(k, item);
+      }
+    }
+  }
+
+  // Synthesize macro-region groups (e.g. France's Île-de-France, Italy's Toscana)
+  const byRegionGroup = new Map(); // global norm(region) -> composite
+  const byCountryRegionGroup = new Map(); // adm0 -> Map<norm(region), composite>
+  for (const { adm0, region, rk, parts } of groupBuckets.values()) {
+    const polygons = parts.flatMap((p) => p.polygons);
+    const composite = {
+      id: `${adm0}:${region}`,
+      iso: null,
+      adm0,
+      name: region,
+      names: [],
+      zh: null,
+      local: null,
+      region,
+      type: 'Region',
+      polygons,
+      bbox: bboxOf(polygons),
+      mainBBox: mainBBoxOf(polygons),
+      parts,
+    };
+    if (!byRegionGroup.has(rk)) byRegionGroup.set(rk, composite);
+    let cg = byCountryRegionGroup.get(adm0);
+    if (!cg) { cg = new Map(); byCountryRegionGroup.set(adm0, cg); }
+    if (!cg.has(rk)) cg.set(rk, composite);
+  }
+
+  return {
+    _kind: 'admin1',
+    source: raw.source || label,
+    regions: entries.map((e) => e.item),
+    byKey,
+    byCountry,
+    byCountryKey,
+    byRegionGroup,
+    byCountryRegionGroup,
+  };
+}
+
+function loadAdmin1(source) {
+  if (source && source._kind === 'admin1') return source;
+  const key = source ?? BUNDLED_ADMIN1;
+  if (caches.admin1.has(key)) return caches.admin1.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
+  if (!raw || !Array.isArray(raw.regions)) throw new Error('Not a Natural Earth admin-1 dataset');
+  const ds = indexAdmin1(raw, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.admin1.set(key, ds);
+  return ds;
+}
+
+function findAdmin1(id, opts = {}) {
+  if (id && typeof id === 'object' && Array.isArray(id.polygons)) return id;
+  const ds = loadAdmin1(opts.source);
+  const q = norm(id);
+  if (!q) return null;
+  const stripped = stripCjkSuffix(q);
+
+  if (opts.country) {
+    const code = resolveCountryCode(opts.country, opts.countrySource);
+    const cMap = ds.byCountryKey.get(code);
+    if (cMap) {
+      const hit = cMap.get(q) || (stripped ? cMap.get(stripped) : null);
+      if (hit) return hit;
+    }
+    const cg = ds.byCountryRegionGroup.get(code);
+    if (cg) {
+      return cg.get(q) || (stripped ? cg.get(stripped) : null) || null;
+    }
+    return null;
+  }
+
+  return (
+    ds.byKey.get(q)
+    || (stripped ? ds.byKey.get(stripped) : null)
+    || ds.byRegionGroup.get(q)
+    || (stripped ? ds.byRegionGroup.get(stripped) : null)
+    || null
+  );
+}
+
+function getAdmin1(id, opts = {}) {
+  if (id && typeof id === 'object' && Array.isArray(id.polygons)) return id;
+  const hit = findAdmin1(id, opts);
+  if (hit) return hit;
+  const ds = loadAdmin1(opts.source);
+  const q = norm(id);
+  const minLen = minSuggestionLen(q);
+  const code = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const pool = code ? (ds.byCountry.get(code) || []) : ds.regions;
+  const near = pool
+    .filter((r) => q.length >= minLen && (
+      norm(r.name).includes(q)
+      || q.includes(norm(r.name))
+      || (r.zh && (norm(r.zh).includes(q) || q.includes(norm(r.zh))))
+    ))
+    .slice(0, 5)
+    .map((r) => `${r.name} (${r.id})`);
+  const scope = code ? ` in ${code}` : '';
+  throw new Error(`Unknown admin-1 region "${id}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+}
+
+function listAdmin1(countryId, source) {
+  const ds = loadAdmin1(source);
+  const list = countryId
+    ? (ds.byCountry.get(resolveCountryCode(countryId)) || [])
+    : ds.regions;
+  return list.map(({ id, adm0, name, zh, local, region, type, bbox, mainBBox }) => ({
+    id, adm0, name, zh, local, region, type, bbox, mainBBox,
+  }));
+}
+
+function admin1InBBox(bbox, opts = {}) {
+  const ds = loadAdmin1(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const pool = opts.country
+    ? (ds.byCountry.get(resolveCountryCode(opts.country, opts.countrySource)) || [])
+    : ds.regions;
+  return pool.filter(
+    (r) => bboxTouches(r.bbox, boxes) && r.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes)),
+  );
+}
+
+// =========================================================================
+// 3. Rivers & Lake Centerlines
+// =========================================================================
+function indexRivers(raw, label) {
+  const byKey = new Map();
+  const rivers = raw.rivers.map((r) => {
+    const lines = raw.flat ? r.lines.map(unflatten) : r.lines;
+    return {
+      name: r.name || null,
+      names: r.names || [],
+      zh: r.zh || null,
+      kind: r.kind || 'River',
+      rank: r.rank ?? 6,
+      lines,
+      bbox: bboxOfLines(lines),
+    };
+  });
+
+  // Sort candidates for byKey so actual 'River' beats 'Lake Centerline' and lower rank wins
+  const ordered = rivers.slice().sort((a, b) => (
+    (a.kind === 'Lake Centerline' ? 1 : 0) - (b.kind === 'Lake Centerline' ? 1 : 0)
+    || a.rank - b.rank
+  ));
+  const tiers = [
+    (r) => (r.name ? [r.name] : []),
+    (r) => (r.zh ? [r.zh] : []),
+    (r) => r.names,
+    (r) => [r.zh, ...r.names].map((s) => stripCjkSuffix(norm(s))).filter(Boolean),
+  ];
+  for (let tier = 0; tier < tiers.length; tier++) {
+    for (const r of ordered) {
+      for (const rawKey of tiers[tier](r)) {
+        const k = tier === 3 ? rawKey : norm(rawKey);
+        if (k && !byKey.has(k)) byKey.set(k, r);
+      }
+    }
+  }
+  return { _kind: 'rivers', source: raw.source || label, rivers, byKey };
+}
+
+function loadRivers(source) {
+  if (source && source._kind === 'rivers') return source;
+  const key = source ?? BUNDLED_RIVERS;
+  if (caches.rivers.has(key)) return caches.rivers.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
+  if (!raw || !Array.isArray(raw.rivers)) throw new Error('Not a Natural Earth rivers dataset');
+  const ds = indexRivers(raw, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.rivers.set(key, ds);
+  return ds;
+}
+
+function riversInBBox(bbox, opts = {}) {
+  const ds = loadRivers(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const includeLC = opts.includeLakeCenterlines === true;
+  const minRank = opts.minRank;
+  const maxRank = opts.maxRank;
+  return ds.rivers
+    .filter((r) => {
+      if (!includeLC && r.kind === 'Lake Centerline') return false;
+      if (minRank != null && r.rank < minRank) return false;
+      if (maxRank != null && r.rank > maxRank) return false;
+      return bboxTouches(r.bbox, boxes) && r.lines.some((line) => bboxTouches(bboxOfLines([line]), boxes));
+    })
+    .sort((a, b) => a.rank - b.rank);
+}
+
+function findRiver(name, source) {
+  if (name && typeof name === 'object' && Array.isArray(name.lines)) return name;
+  const ds = loadRivers(extractSource(source));
+  const q = norm(name);
+  if (!q) return null;
+  const stripped = stripCjkSuffix(q);
+  return ds.byKey.get(q) || (stripped ? ds.byKey.get(stripped) : null) || null;
+}
+
+function getRiver(name, source) {
+  if (name && typeof name === 'object' && Array.isArray(name.lines)) return name;
+  const hit = findRiver(name, source);
+  if (hit) return hit;
+  const ds = loadRivers(extractSource(source));
+  const q = norm(name);
+  const minLen = minSuggestionLen(q);
+  const seen = new Set();
+  const near = [];
+  for (const r of ds.rivers) {
+    if (!r.name || seen.has(r.name)) continue;
+    const rn = norm(r.name);
+    if (q.length >= minLen && (rn.includes(q) || q.includes(rn) || r.names.some((n) => norm(n).includes(q)))) {
+      seen.add(r.name);
+      near.push(r.name);
+      if (near.length >= 5) break;
+    }
+  }
+  throw new Error(`Unknown river "${name}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+}
+
+// =========================================================================
+// 4. Lakes & Reservoirs
+// =========================================================================
+function indexLakes(raw, label) {
+  const byKey = new Map();
+  const lakes = raw.lakes.map((l) => {
+    const polygons = raw.flat ? l.polygons.map((poly) => poly.map(unflatten)) : l.polygons;
+    let area = 0;
+    for (const poly of polygons) area += ringArea(poly[0]);
+    return {
+      name: l.name || null,
+      names: l.names || [],
+      zh: l.zh || null,
+      kind: l.kind || 'Lake',
+      rank: l.rank ?? 6,
+      area,
+      polygons,
+      bbox: bboxOf(polygons),
+    };
+  });
+
+  const ordered = lakes.slice().sort((a, b) => a.rank - b.rank || b.area - a.area);
+  const tiers = [
+    (l) => (l.name ? [l.name] : []),
+    (l) => (l.zh ? [l.zh] : []),
+    (l) => l.names,
+    (l) => [l.zh, ...l.names].map((s) => stripCjkSuffix(norm(s))).filter(Boolean),
+  ];
+  for (let tier = 0; tier < tiers.length; tier++) {
+    for (const l of ordered) {
+      for (const rawKey of tiers[tier](l)) {
+        const k = tier === 3 ? rawKey : norm(rawKey);
+        if (k && !byKey.has(k)) byKey.set(k, l);
+      }
+    }
+  }
+  return { _kind: 'lakes', source: raw.source || label, lakes, byKey };
+}
+
+function loadLakes(source) {
+  if (source && source._kind === 'lakes') return source;
+  const key = source ?? BUNDLED_LAKES;
+  if (caches.lakes.has(key)) return caches.lakes.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
+  if (!raw || !Array.isArray(raw.lakes)) throw new Error('Not a Natural Earth lakes dataset');
+  const ds = indexLakes(raw, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.lakes.set(key, ds);
+  return ds;
+}
+
+function lakesInBBox(bbox, opts = {}) {
+  const ds = loadLakes(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const maxRank = opts.maxRank;
+  const minArea = opts.minArea;
+  return ds.lakes
+    .filter((l) => {
+      if (maxRank != null && l.rank > maxRank) return false;
+      if (minArea != null && l.area < minArea) return false;
+      return bboxTouches(l.bbox, boxes) && l.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes));
+    })
+    .sort((a, b) => a.rank - b.rank || b.area - a.area);
+}
+
+function findLake(name, source) {
+  if (name && typeof name === 'object' && Array.isArray(name.polygons)) return name;
+  const ds = loadLakes(extractSource(source));
+  const q = norm(name);
+  if (!q) return null;
+  const stripped = stripCjkSuffix(q);
+  return ds.byKey.get(q) || (stripped ? ds.byKey.get(stripped) : null) || null;
+}
+
+function getLake(name, source) {
+  if (name && typeof name === 'object' && Array.isArray(name.polygons)) return name;
+  const hit = findLake(name, source);
+  if (hit) return hit;
+  const ds = loadLakes(extractSource(source));
+  const q = norm(name);
+  const minLen = minSuggestionLen(q);
+  const seen = new Set();
+  const near = [];
+  for (const l of ds.lakes) {
+    if (!l.name || seen.has(l.name)) continue;
+    const ln = norm(l.name);
+    if (q.length >= minLen && (ln.includes(q) || q.includes(ln) || (l.zh && norm(l.zh).includes(q)))) {
+      seen.add(l.name);
+      near.push(l.name);
+      if (near.length >= 5) break;
+    }
+  }
+  throw new Error(`Unknown lake "${name}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+}
+
+// =========================================================================
+// 5. Populated Places (Cities & Capitals)
+// =========================================================================
+function indexPlaces(raw, label) {
+  const places = raw.places
+    .map((p) => ({
+      name: p.name,
+      ascii: p.ascii || p.name,
+      names: p.names || [],
+      zh: p.zh || null,
+      ja: p.ja || null,
+      ko: p.ko || null,
+      adm0: p.adm0 || null,
+      adm1: p.adm1 || null,
+      capital: Boolean(p.capital),
+      adm1Capital: Boolean(p.adm1Capital),
+      pop: Number(p.pop) || 0,
+      rank: p.rank ?? 10,
+      lon: p.lon,
+      lat: p.lat,
+    }))
+    .sort((a, b) => (
+      (b.capital ? 1 : 0) - (a.capital ? 1 : 0)
+      || b.pop - a.pop
+      || a.rank - b.rank
+    ));
+
+  const byKey = new Map();
+  const addKey = (k, p) => {
+    if (!k) return;
+    let arr = byKey.get(k);
+    if (!arr) { arr = []; byKey.set(k, arr); }
+    if (!arr.includes(p)) arr.push(p);
+  };
+
+  for (const p of places) {
+    const rawKeys = [p.name, p.ascii, p.zh, p.ja, p.ko, ...p.names].filter(Boolean);
+    for (const s of rawKeys) {
+      const k = norm(s);
+      addKey(k, p);
+      const sk = stripCjkSuffix(k);
+      if (sk) addKey(sk, p);
+    }
+  }
+  return { _kind: 'places', source: raw.source || label, places, byKey };
+}
+
+function loadPlaces(source) {
+  if (source && source._kind === 'places') return source;
+  const key = source ?? BUNDLED_PLACES;
+  if (caches.places.has(key)) return caches.places.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
+  if (!raw || !Array.isArray(raw.places)) throw new Error('Not a Natural Earth populated places dataset');
+  const ds = indexPlaces(raw, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.places.set(key, ds);
+  return ds;
+}
+
+function buildAdmin1Matcher(admin1Opt, countryCode, admin1Source) {
+  if (!admin1Opt) return null;
+  const keys = new Set();
+  const q = norm(admin1Opt);
+  if (q) keys.add(q);
+  const sq = stripCjkSuffix(q);
+  if (sq) keys.add(sq);
+  try {
+    const a1 = findAdmin1(admin1Opt, { country: countryCode || undefined, source: admin1Source });
+    if (a1) {
+      keys.add(norm(a1.name));
+      for (const n of a1.names || []) keys.add(norm(n));
+    }
+  } catch {
+    // Ignore if admin-1 dataset is unavailable
+  }
+  return (pAdm1) => {
+    if (!pAdm1) return false;
+    const pk = norm(pAdm1);
+    return keys.has(pk) || keys.has(stripCjkSuffix(pk));
+  };
+}
+
+function placesInBBox(bbox, opts = {}) {
+  const ds = loadPlaces(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const matchAdm1 = buildAdmin1Matcher(opts.admin1, countryCode, opts.admin1Source);
+  const maxRank = opts.maxRank;
+  const minPop = opts.minPop;
+  const capitalsOnly = opts.capitalsOnly === true;
+
+  const out = ds.places.filter((p) => {
+    if (!pointInBBox(p.lon, p.lat, boxes)) return false;
+    if (countryCode && p.adm0 !== countryCode) return false;
+    if (matchAdm1 && !matchAdm1(p.adm1)) return false;
+    if (capitalsOnly && !p.capital) return false;
+    if (maxRank != null && p.rank > maxRank) return false;
+    if (minPop != null && p.pop < minPop) return false;
+    return true;
+  });
+  return opts.limit != null && opts.limit >= 0 ? out.slice(0, opts.limit) : out;
+}
+
+function findPlace(name, opts = {}) {
+  if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
+    return name;
+  }
+  const ds = loadPlaces(opts.source);
+  const q = norm(name);
+  if (!q) return null;
+  const stripped = stripCjkSuffix(q);
+  const candidates = ds.byKey.get(q) || (stripped ? ds.byKey.get(stripped) : null);
+  if (!candidates || !candidates.length) return null;
+
+  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const matchAdm1 = buildAdmin1Matcher(opts.admin1, countryCode, opts.admin1Source);
+  return candidates.find((p) => (
+    (!countryCode || p.adm0 === countryCode)
+    && (!matchAdm1 || matchAdm1(p.adm1))
+  )) || null;
+}
+
+function getPlace(name, opts = {}) {
+  if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
+    return name;
+  }
+  const hit = findPlace(name, opts);
+  if (hit) return hit;
+  const ds = loadPlaces(opts.source);
+  const q = norm(name);
+  const minLen = minSuggestionLen(q);
+  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const near = ds.places
+    .filter((p) => {
+      if (countryCode && p.adm0 !== countryCode) return false;
+      if (q.length < minLen) return false;
+      return (
+        norm(p.name).includes(q)
+        || q.includes(norm(p.name))
+        || (p.zh && norm(p.zh).includes(q))
+        || (p.ja && norm(p.ja).includes(q))
+        || (p.ko && norm(p.ko).includes(q))
+      );
+    })
+    .slice(0, 5)
+    .map((p) => `${p.name} (${p.adm0})`);
+  const scope = countryCode ? ` in ${countryCode}` : '';
+  throw new Error(`Unknown place "${name}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+}
+
+// =========================================================================
+// 6. Landforms & Elevation Peaks
+// =========================================================================
+function indexLandforms(raw, label) {
+  const peaks = (raw.peaks || [])
+    .map((p) => ({
+      name: p.name,
+      names: p.names || [],
+      zh: p.zh || null,
+      kind: p.kind || 'mountain',
+      elevation: p.elevation ?? null,
+      region: p.region || null,
+      rank: p.rank ?? 6,
+      lon: p.lon,
+      lat: p.lat,
+    }))
+    .sort((a, b) => (b.elevation ?? -Infinity) - (a.elevation ?? -Infinity));
+
+  const regions = (raw.regions || [])
+    .map((r) => {
+      const polygons = raw.flat ? r.polygons.map((poly) => poly.map(unflatten)) : r.polygons;
+      return {
+        name: r.name,
+        names: r.names || [],
+        zh: r.zh || null,
+        kind: r.kind || 'Range/mtn',
+        region: r.region || null,
+        rank: r.rank ?? 6,
+        polygons,
+        bbox: bboxOf(polygons),
+        mainBBox: mainBBoxOf(polygons),
+      };
+    })
+    .sort((a, b) => a.rank - b.rank);
+
+  return { _kind: 'landforms', source: raw.source || label, peaks, regions };
+}
+
+function loadLandforms(source) {
+  if (source && source._kind === 'landforms') return source;
+  const key = source ?? BUNDLED_LANDFORMS;
+  if (caches.landforms.has(key)) return caches.landforms.get(key);
+  const raw = typeof key === 'string' ? readJsonFile(key) : key;
+  if (!raw || (!Array.isArray(raw.peaks) && !Array.isArray(raw.regions))) {
+    throw new Error('Not a Natural Earth landforms dataset');
+  }
+  const ds = indexLandforms(raw, typeof key === 'string' ? path.basename(key) : 'custom');
+  caches.landforms.set(key, ds);
+  return ds;
+}
+
+function peaksInBBox(bbox, opts = {}) {
+  const ds = loadLandforms(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const minElev = opts.minElev;
+  const kindOpt = Object.prototype.hasOwnProperty.call(opts, 'kind') ? opts.kind : 'mountain';
+  let kindSet = null;
+  if (kindOpt != null && kindOpt !== 'all') {
+    const arr = Array.isArray(kindOpt) ? kindOpt : [kindOpt];
+    kindSet = new Set(arr.map((k) => String(k).toLowerCase()));
+  }
+  return ds.peaks.filter((p) => {
+    if (!pointInBBox(p.lon, p.lat, boxes)) return false;
+    if (kindSet && !kindSet.has(String(p.kind || '').toLowerCase())) return false;
+    if (minElev != null && (p.elevation == null || p.elevation < minElev)) return false;
+    return true;
+  });
+}
+
+function landformsInBBox(bbox, opts = {}) {
+  const ds = loadLandforms(opts.source);
+  const boxes = shiftedBBoxes(bbox);
+  const maxRank = opts.maxRank;
+  let kindSet = null;
+  if (opts.kinds != null) {
+    const arr = Array.isArray(opts.kinds) ? opts.kinds : [opts.kinds];
+    kindSet = new Set(arr.map((k) => String(k).toLowerCase()));
+  }
+  return ds.regions.filter((r) => {
+    if (kindSet && !kindSet.has(String(r.kind || '').toLowerCase())) return false;
+    if (maxRank != null && r.rank > maxRank) return false;
+    return bboxTouches(r.bbox, boxes) && r.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes));
+  });
+}
+
+// =========================================================================
+// 7. Unified Region Resolver
+// =========================================================================
+const ISO_3166_2_RE = /^[A-Za-z]{2}-[A-Za-z0-9]{1,3}$/;
+
+function resolveRegion(target, opts = {}) {
+  // 1. Explicit [west, south, east, north] bbox array
+  if (Array.isArray(target)) {
+    if (target.length !== 4 || !target.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      throw new Error('Invalid bbox target: expected [west, south, east, north] of 4 finite numbers');
+    }
+    return { kind: 'bbox', bbox: target, mainBBox: target, feature: null };
+  }
+
+  // 2. Object target: already-resolved, feature with polygons, or { country, admin1, bbox }
+  if (target && typeof target === 'object') {
+    if (target.kind && Array.isArray(target.bbox) && Array.isArray(target.mainBBox)) {
+      return target;
+    }
+    if (Array.isArray(target.polygons)) {
+      return {
+        kind: target.adm0 ? 'admin1' : 'country',
+        bbox: target.bbox || bboxOf(target.polygons),
+        mainBBox: target.mainBBox || mainBBoxOf(target.polygons),
+        feature: target,
+      };
+    }
+    if (target.admin1 != null) {
+      const r = getAdmin1(target.admin1, {
+        country: target.country ?? opts.country,
+        source: opts.admin1Source,
+        countrySource: opts.countrySource ?? opts.source,
+      });
+      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+    }
+    if (target.country != null) {
+      const c = getCountry(target.country, opts.countrySource ?? opts.source);
+      return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
+    }
+    if (Array.isArray(target.bbox)) {
+      return resolveRegion(target.bbox, opts);
+    }
+    throw new Error('Invalid region target object: expected { country, admin1 }, { country }, or { bbox }');
+  }
+
+  // 3. String target
+  if (typeof target === 'string') {
+    const trimmed = target.trim();
+    if (!trimmed) throw new Error('Empty region target');
+
+    // Precedence 1: opts.country scopes strictly to admin-1 inside that country
+    if (opts.country) {
+      const r = getAdmin1(trimmed, {
+        country: opts.country,
+        source: opts.admin1Source,
+        countrySource: opts.countrySource ?? opts.source,
+      });
+      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+    }
+
+    // Precedence 2: ISO-3166-2 code (e.g. 'CN-SC', 'US-CA')
+    if (ISO_3166_2_RE.test(trimmed)) {
+      const r = findAdmin1(trimmed, { source: opts.admin1Source });
+      if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+    }
+
+    // Precedence 3: Country before Admin-1 (preserves backward compat & lazy loading)
+    const c = findCountry(trimmed, opts.countrySource ?? opts.source);
+    if (c) return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
+
+    // Precedence 4: Admin-1 fallback
+    const r = findAdmin1(trimmed, { source: opts.admin1Source });
+    if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+
+    // Build helpful suggestions across countries and admin-1
+    const q = norm(trimmed);
+    const minLen = minSuggestionLen(q);
+    const near = [];
+    if (q.length >= minLen) {
+      for (const item of loadCountries(opts.countrySource ?? opts.source).countries) {
+        if (norm(item.name).includes(q) || q.includes(norm(item.name))) {
+          near.push(`${item.name} (${item.id})`);
+          if (near.length >= 3) break;
+        }
+      }
+      for (const item of loadAdmin1(opts.admin1Source).regions) {
+        if (norm(item.name).includes(q) || (item.zh && norm(item.zh).includes(q))) {
+          near.push(`${item.name} (${item.id})`);
+          if (near.length >= 5) break;
+        }
+      }
+    }
+    throw new Error(`Unknown region "${target}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  }
+
+  throw new Error('Invalid region target: expected [w, s, e, n], string, or { country, admin1 }');
 }
 
 module.exports = {
+  // Existing exports (100% backward compatible)
   loadCountries,
   getCountry,
   findCountry,
@@ -173,4 +980,29 @@ module.exports = {
   bboxOf,
   mainBBoxOf,
   ringArea,
+  // New M2 exports
+  loadAdmin1,
+  getAdmin1,
+  findAdmin1,
+  listAdmin1,
+  admin1InBBox,
+  loadRivers,
+  riversInBBox,
+  findRiver,
+  getRiver,
+  loadLakes,
+  lakesInBBox,
+  findLake,
+  getLake,
+  loadPlaces,
+  placesInBBox,
+  findPlace,
+  getPlace,
+  loadLandforms,
+  peaksInBBox,
+  landformsInBBox,
+  resolveRegion,
+  // Utilities
+  norm,
+  bboxIntersects,
 };

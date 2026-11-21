@@ -195,31 +195,40 @@ function drawOcean(P, { pad = 5, color = PALETTE.ocean } = {}) {
   wash(P, [rect], color, { strength: 0.82, toothAmt: 0.38 });
 }
 
-// Clip a polyline to rectangular box [x0, y0, x1, y1]; runs start and end exactly on the box edge
+// Clip an open polyline to [x0, y0, x1, y1] using Liang-Barsky; runs start and end on the box edge.
 function clipRuns(pts, x0, y0, x1, y1) {
-  const inside = ([x, y]) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
-  // Point where segment a (inside) -> b (outside) leaves the box
-  const exit = (a, b) => {
-    let t = 1;
-    const dx = b[0] - a[0], dy = b[1] - a[1];
-    if (b[0] < x0) t = Math.min(t, (x0 - a[0]) / dx);
-    if (b[0] > x1) t = Math.min(t, (x1 - a[0]) / dx);
-    if (b[1] < y0) t = Math.min(t, (y0 - a[1]) / dy);
-    if (b[1] > y1) t = Math.min(t, (y1 - a[1]) / dy);
-    return [a[0] + dx * t, a[1] + dy * t];
-  };
   const runs = [];
   let cur = [];
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i], prev = pts[i - 1];
-    if (inside(p)) {
-      if (!cur.length && prev) cur.push(exit(p, prev));
-      cur.push(p);
-    } else {
-      if (cur.length) {
-        cur.push(exit(prev, p));
-        runs.push(cur);
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    let t0 = 0, t1 = 1;
+    const checks = [[-dx, a[0] - x0], [dx, x1 - a[0]], [-dy, a[1] - y0], [dy, y1 - a[1]]];
+    let ok = true;
+    for (const [p, q] of checks) {
+      if (p === 0) {
+        if (q < 0) { ok = false; break; }
+      } else {
+        const r = q / p;
+        if (p < 0) { if (r > t1) { ok = false; break; } if (r > t0) t0 = r; }
+        else { if (r < t0) { ok = false; break; } if (r < t1) t1 = r; }
       }
+    }
+    if (!ok || t0 >= t1) {
+      if (cur.length > 1) runs.push(cur);
+      cur = [];
+      continue;
+    }
+    const p0 = t0 === 0 ? a : [a[0] + dx * t0, a[1] + dy * t0];
+    const p1 = t1 === 1 ? b : [a[0] + dx * t1, a[1] + dy * t1];
+    if (t0 === 0 && cur.length) {
+      cur.push(p1);
+    } else {
+      if (cur.length > 1) runs.push(cur);
+      cur = [p0, p1];
+    }
+    if (t1 < 1) {
+      if (cur.length > 1) runs.push(cur);
       cur = [];
     }
   }
@@ -310,6 +319,52 @@ function geoRings(P, proj, polygons, o = {}) {
       }
       ring = simplifyRing(ring, o.simplify ?? 0.12);
       out.push(o.smooth === false || ring.length < 4 ? ring : D.curve(ring, true, o.step ?? 0.3));
+    }
+  }
+  return out;
+}
+
+// Drop vertices closer than `tol` mm to the line between their kept neighbours (open-polyline Douglas–Peucker)
+function simplifyLine(pts, tol) {
+  const n = pts.length;
+  if (n < 3 || !(tol > 0)) return pts;
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  const tol2 = tol * tol;
+  while (stack.length) {
+    const [i0, i1] = stack.pop();
+    const a = pts[i0], b = pts[i1];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy;
+    let worst = -1, worstD = tol2;
+    for (let i = i0 + 1; i < i1; i++) {
+      const p = pts[i];
+      const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+      const d = (p[0] - a[0] - t * dx) ** 2 + (p[1] - a[1] - t * dy) ** 2;
+      if (d > worstD) { worstD = d; worst = i; }
+    }
+    if (worst > 0) {
+      keep[worst] = 1;
+      stack.push([i0, worst], [worst, i1]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+// Project (lon, lat) open polylines to hand-drawable mm polylines.
+// Clipped to sheet frame via clipRuns, simplified, smoothed, and stubs shorter than `minLen` mm dropped.
+function geoLines(P, proj, lines, o = {}) {
+  const m = o.margin ?? 12;
+  const [x0, y0, x1, y1] = o.frame || [-m, -m, P.w + m, P.h + m];
+  const minLen = o.minLen ?? 1.5;
+  const out = [];
+  for (const line of lines || []) {
+    if (!line || line.length < 2) continue;
+    const projected = proj.ring ? proj.ring(line) : proj.pts(line);
+    for (let run of clipRuns(projected, x0, y0, x1, y1)) {
+      if (run.length < 2 || D.polyLen(run) < minLen) continue;
+      run = simplifyLine(run, o.simplify ?? 0.12);
+      out.push(o.smooth === false || run.length < 3 ? run : D.curve(run, false, o.step ?? 0.35));
     }
   }
   return out;
@@ -820,8 +875,11 @@ module.exports = {
   createProjection,
   fitProjection,
   geoRings,
+  geoLines,
   clipRing,
+  clipRuns,
   simplifyRing,
+  simplifyLine,
   drawOcean,
   drawGraticule,
   drawCoastWaterlines,
