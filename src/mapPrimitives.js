@@ -1,6 +1,7 @@
 'use strict';
 const D = require('../engine/lib/draw');
 const MK = require('../engine/lib/mask');
+const Lt = require('../engine/lib/letter');
 const { drawFlag } = require('./flags');
 
 // Authentic hand-colored vintage atlas palette
@@ -536,14 +537,38 @@ function drawCity(P, x, y, name, o = {}) {
   P.dot(x, y, o.capital ? 1.35 : 0.85, o.capital ? PALETTE.crimson : PALETTE.ink);
   if (o.capital) P.outline([D.ell(x, y, 2.0, 2.0)], { nib: 0.16, color: PALETTE.crimson });
   if (name) {
-    const dx = o.dx ?? 0, dy = o.dy ?? -2.2;
-    P.text(name, x + dx, y + dy, {
-      face: o.capital ? 'serif-bold' : 'sans-bold',
-      size: o.size ?? (o.capital ? 3.2 : 2.3),
+    const size = o.size ?? (o.capital ? 3.2 : 2.3);
+    const textOpts = {
+      face: o.face || (o.capital ? 'serif-bold' : 'sans-bold'),
+      size,
       align: o.align ?? 'center',
       color: o.color || (o.capital ? PALETTE.crimson : PALETTE.ink),
-    });
+    };
+    if (o.halo !== undefined) textOpts.halo = o.halo;
+    if (o.spacing !== undefined) textOpts.spacing = o.spacing;
+    if (o.angle !== undefined) textOpts.angle = o.angle;
+    if (o.rotateDeg !== undefined) textOpts.rotateDeg = o.rotateDeg;
+
+    if (o.sub) {
+      const layout = o.bilingualLayout || o.layout || 'stack';
+      const subSize = o.secondarySize ?? o.subSize ?? size * 0.68;
+      const defaultDy = layout === 'stack' ? -(2.2 + size * 0.35 + subSize * 1.05) : -2.2;
+      const dx = o.dx ?? 0, dy = o.dy ?? defaultDy;
+      return P.writeBilingual(name, o.sub, x + dx, y + dy, {
+        ...textOpts,
+        layout,
+        secondarySize: subSize,
+        ...(o.secondaryFace || o.subFace ? { secondaryFace: o.secondaryFace || o.subFace } : {}),
+        ...(o.secondaryColor || o.subColor ? { secondaryColor: o.secondaryColor || o.subColor } : {}),
+        ...(o.sep !== undefined ? { sep: o.sep } : {}),
+        ...(o.gap !== undefined ? { gap: o.gap } : {}),
+      });
+    }
+
+    const dx = o.dx ?? 0, dy = o.dy ?? -2.2;
+    return P.text(name, x + dx, y + dy, textOpts);
   }
+  return null;
 }
 
 // True-North Rotatable Vintage Compass Rose + Faint Rhumb Lines
@@ -596,6 +621,25 @@ function drawCompass(P, cx, cy, r = 9, o = {}) {
   P.text('W', wx, wy + 0.6, { face: 'serif-bold', size: 2.3, align: 'center' });
 }
 
+const CARTOUCHE_LOCALE = {
+  en: {
+    facts: { capital: 'Capital', language: 'Language', population: 'Pop.', area: 'Area', sep: ': ' },
+    legend: { capital: 'Capital', city: 'Major City', route: 'Railway' },
+  },
+  zh: {
+    facts: { capital: '首都', language: '语言', population: '人口', area: '面积', sep: '：' },
+    legend: { capital: '首都', city: '主要城市', route: '铁路' },
+  },
+  ja: {
+    facts: { capital: '首都', language: '言語', population: '人口', area: '面積', sep: '：' },
+    legend: { capital: '首都', city: '主要都市', route: '鉄道' },
+  },
+  ko: {
+    facts: { capital: '수도', language: '언어', population: '인구', area: '면적', sep: ': ' },
+    legend: { capital: '수도', city: '주요 도시', route: '철도' },
+  },
+};
+
 // Framed Parchment Map Title, Country Facts, Legend & Graphical Scale Cartouche
 function drawCartouche(P, x, y, w, h, info = {}) {
   // Subtle drop shadow hatch
@@ -608,25 +652,58 @@ function drawCartouche(P, x, y, w, h, info = {}) {
     P.dot(rx, ry, 0.55, PALETTE.ochre);
   }
 
-  // Country Title + Waving National Flag
+  // Country Title + Waving National Flag (auto-scale title so CJK/long titles never collide with flag)
   if (info.country) {
-    P.text(info.country, x + 5.5, y + 12.2, { face: 'serif-bold', size: info.titleSize ?? 9.2, align: 'left', color: PALETTE.ink });
+    let titleSize = info.titleSize ?? 9.2;
+    const maxTitleW = info.flag ? Math.max(12, w - 28.0) : Math.max(12, w - 11.0);
+    const measuredW = Lt.measure(info.country, 'serif-bold', titleSize);
+    if (measuredW > maxTitleW && measuredW > 0) {
+      titleSize = Math.max(3.5, titleSize * (maxTitleW / measuredW));
+    }
+    P.text(info.country, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: PALETTE.ink });
   }
   if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
-  if (info.subtitle) {
-    P.italic(info.subtitle, x + 5.8, y + 16.4, { face: 'serif-bold', size: 2.7, align: 'left', color: PALETTE.crimson });
+
+  // Subtitle (with optional bilingual secondary via info.subtitleSub or info.sub)
+  const maxSubW = Math.max(12, w - 11.6);
+  const secondarySub = info.subtitleSub || info.sub;
+  if (info.subtitle && secondarySub) {
+    let subSize = 2.7;
+    const estW = Lt.measure(`${info.subtitle}  ·  ${secondarySub}`, 'serif-bold', subSize);
+    if (estW > maxSubW && estW > 0) subSize = Math.max(1.5, subSize * (maxSubW / estW));
+    P.writeBilingual(info.subtitle, secondarySub, x + 5.8, y + 16.4, {
+      face: 'serif-bold',
+      size: subSize,
+      align: 'left',
+      color: PALETTE.crimson,
+      slant: 0.22,
+      layout: 'inline',
+      sep: '  ·  ',
+    });
+  } else if (info.subtitle || secondarySub) {
+    const subText = info.subtitle || secondarySub;
+    let subSize = 2.7;
+    const measuredSubW = Lt.measure(subText, 'serif-bold', subSize);
+    if (measuredSubW > maxSubW && measuredSubW > 0) {
+      subSize = Math.max(1.5, subSize * (maxSubW / measuredSubW));
+    }
+    P.italic(subText, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
   }
 
   // Divider line
   P.ink([[x + 5, y + 18.6], [x + w - 5, y + 18.6]], { nib: 0.12, color: '#9c8e7b' });
 
   // Fact rows (left column) & Map Legend (right column)
-  const facts = info.facts || [
-    ['Capital', info.capital],
-    ['Language', info.language],
-    ['Pop.', info.population],
-    ['Area', info.area],
-  ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`);
+  const langKey = String(info.lang || 'en').toLowerCase().slice(0, 2);
+  const loc = CARTOUCHE_LOCALE[langKey] || CARTOUCHE_LOCALE.en;
+  const fl = { ...loc.facts, ...(info.factLabels || {}) };
+  const rawFacts = info.facts || [
+    [fl.capital, info.capital],
+    [fl.language, info.language],
+    [fl.population, info.population],
+    [fl.area, info.area],
+  ].filter(([, v]) => v);
+  const facts = rawFacts.map((entry) => (Array.isArray(entry) ? `${entry[0]}${fl.sep}${entry[1]}` : entry));
   facts.forEach((txt, i) => {
     P.text(txt, x + 5.5, y + 23.0 + i * 4.2, { face: 'sans-bold', size: 2.25, align: 'left', color: PALETTE.ink });
   });
@@ -634,9 +711,9 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   // Legend on right side of cartouche: [{ symbol: 'capital' | 'city' | 'route' | 'river', label, color }]
   const lx = x + w * 0.58;
   const legend = info.legend || [
-    { symbol: 'capital', label: 'Capital' },
-    { symbol: 'city', label: 'Major City' },
-    { symbol: 'route', label: 'Railway' },
+    { symbol: 'capital', label: loc.legend.capital },
+    { symbol: 'city', label: loc.legend.city },
+    { symbol: 'route', label: loc.legend.route },
   ];
   legend.forEach((item, i) => {
     const ly = y + 22.2 + i * 4.5;
@@ -676,9 +753,17 @@ function drawInsetBox(P, x, y, w, h, title) {
   P.ink([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]], { nib: 0.3, color: PALETTE.ink });
   P.ink([[x + 1.1, y + 1.1], [x + w - 1.1, y + 1.1], [x + w - 1.1, y + h - 1.1], [x + 1.1, y + h - 1.1], [x + 1.1, y + 1.1]], { nib: 0.12, color: PALETTE.ink });
   if (title) {
-    const tw = Math.min(w - 6, title.length * 1.9 + 6);
+    const baseSize = 2.3;
+    const maxTw = Math.max(8, w - 5);
+    const measured = Lt.measure(title, 'serif-bold', baseSize);
+    const padX = 5.5;
+    const tw = Math.min(maxTw, Math.max(8, measured + padX));
+    const maxTextW = Math.max(4, tw - 3.5);
+    const fitSize = measured > maxTextW && measured > 0
+      ? Math.max(1.3, baseSize * (maxTextW / measured))
+      : baseSize;
     part(P, D.rrect(x + 2.5, y + 2.2, x + 2.5 + tw, y + 7.2, 0.8), PALETTE.cream, { nib: 0.16 });
-    P.text(title, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: 2.3, align: 'center' });
+    P.text(title, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center' });
   }
   return box;
 }

@@ -2,6 +2,7 @@
 const { plate } = require('../engine/lib/storybook');
 const { person, POSES } = require('../engine/lib/people');
 const D = require('../engine/lib/draw');
+const Lt = require('../engine/lib/letter');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
 const GEO = require('./geo');
@@ -97,9 +98,36 @@ function createMap(opts = {}) {
     insetBox: (x, y, w2, h2, title) => M.drawInsetBox(P, x, y, w2, h2, title),
 
     // Typography
-    label: (text, x, y, o = {}) => P.text(text, x, y, { face: 'serif-bold', size: 2.6, align: 'center', ...o }),
-    seaLabel: (text, x, y, o = {}) => P.italic(text, x, y, { face: 'serif-bold', size: 3.4, align: 'center', color: '#426a80', spacing: 0.16, ...o }),
-    regionLabel: (text, x, y, o = {}) => P.text(text, x, y, { face: 'serif-bold', size: 2.5, align: 'center', color: '#7a6852', spacing: 0.22, ...o }),
+    label(text, x, y, o = {}) {
+      const base = { face: 'serif-bold', size: 2.6, align: 'center' };
+      if (o.sub) {
+        const { sub, bilingualLayout, ...rest } = o;
+        return P.writeBilingual(text, sub, x, y, { ...base, ...rest, layout: bilingualLayout || rest.layout || 'stack' });
+      }
+      return P.text(text, x, y, { ...base, ...o });
+    },
+    seaLabel(text, x, y, o = {}) {
+      const base = { face: 'serif-bold', size: 3.4, align: 'center', color: '#426a80', spacing: 0.16, slant: 0.22 };
+      if (o.sub) {
+        const { sub, bilingualLayout, ...rest } = o;
+        return P.writeBilingual(text, sub, x, y, { ...base, ...rest, layout: bilingualLayout || rest.layout || 'stack' });
+      }
+      return P.text(text, x, y, { ...base, ...o });
+    },
+    regionLabel(text, x, y, o = {}) {
+      const base = { face: 'serif-bold', size: 2.5, align: 'center', color: '#7a6852', spacing: 0.22 };
+      if (o.sub) {
+        const { sub, bilingualLayout, ...rest } = o;
+        return P.writeBilingual(text, sub, x, y, { ...base, ...rest, layout: bilingualLayout || rest.layout || 'stack' });
+      }
+      return P.text(text, x, y, { ...base, ...o });
+    },
+    block: (lines, cx, cy, o = {}) => P.block(lines, cx, cy, { face: 'serif-bold', size: 2.6, align: 'center', ...o }),
+    writeAlongPath: (text, pts, o = {}) => P.writeAlongPath(text, pts, { face: 'serif-bold', size: 2.6, ...o }),
+    writeBilingual: (primary, secondary, x, y, o = {}) => P.writeBilingual(primary, secondary, x, y, { face: 'serif-bold', size: 2.6, align: 'center', ...o }),
+    registerFont: Lt.registerFont,
+    measureBox: Lt.measureBox,
+    listFonts: Lt.listFonts,
 
     // Characters & elements
     person: (x, y, scale = 0.52, o = {}) => person(P, x, y, scale, o),
@@ -135,4 +163,11 @@ module.exports = {
   planSpec,
   renderSpec,
   createLayout,
+  // Typography
+  block: Lt.block,
+  writeAlongPath: Lt.writeAlongPath,
+  writeBilingual: Lt.writeBilingual,
+  registerFont: Lt.registerFont,
+  measureBox: Lt.measureBox,
+  listFonts: Lt.listFonts,
 };
