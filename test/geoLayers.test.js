@@ -390,3 +390,31 @@ test('regression: scripts/build-natural-earth.js parseArgs rejects empty --only'
   assert.throws(() => builder.parseArgs(['--only']), /Invalid --only/);
 });
 
+test('regression: get* functions throw Unknown Error (not TypeError) for Symbol and Object.create(null)', () => {
+  const isUnknownError = (err) => (
+    err instanceof Error
+    && !(err instanceof TypeError)
+    && /Unknown/.test(err.message)
+  );
+  const badInputs = [Symbol('x'), Object.create(null)];
+  const getters = [
+    GEO.getCountry,
+    GEO.getAdmin1,
+    GEO.getRiver,
+    GEO.getLake,
+    GEO.getPlace,
+  ];
+  for (const fn of getters) {
+    for (const input of badInputs) {
+      assert.throws(() => fn(input), isUnknownError);
+    }
+  }
+});
+
+test('regression: findRiver/getRiver and findLake/getLake accept empty options object {}', () => {
+  assert.equal(GEO.findRiver('Nile', {})?.name, 'Nile');
+  assert.equal(GEO.getRiver('Nile', {}).name, 'Nile');
+  assert.equal(GEO.findLake('Baikal', {})?.name, 'Lake Baikal');
+  assert.equal(GEO.getLake('Baikal', {}).name, 'Lake Baikal');
+});
+

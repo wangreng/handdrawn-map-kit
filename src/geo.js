@@ -73,13 +73,18 @@ const isDatasetObject = (v) => (
   || Array.isArray(v.peaks)
 );
 
-const extractSource = (v) => (
-  v && typeof v === 'object' && !Array.isArray(v)
-  && !isDatasetObject(v)
-  && Object.prototype.hasOwnProperty.call(v, 'source')
-    ? v.source
-    : v
-);
+const fmtId = (v) => {
+  if (typeof v === 'symbol') return v.toString();
+  try { return String(v); } catch { return Object.prototype.toString.call(v); }
+};
+
+const extractSource = (v) => {
+  if (v && typeof v === 'object' && !Array.isArray(v) && !isDatasetObject(v)) {
+    if (Object.prototype.hasOwnProperty.call(v, 'source')) return v.source;
+    if (Object.keys(v).length === 0) return undefined;
+  }
+  return v;
+};
 
 // Natural Earth GeoJSON FeatureCollection -> { countries: [{ id, name, names, iso2, continent, polygons }] }
 function fromGeoJSON(geojson) {
@@ -260,7 +265,7 @@ function getCountry(id, source) {
     .filter((c) => q.length >= minLen && (norm(c.name).includes(q) || q.includes(norm(c.name))))
     .slice(0, 5)
     .map((c) => `${c.name} (${c.id})`);
-  throw new Error(`Unknown country "${id}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  throw new Error(`Unknown country "${fmtId(id)}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
 }
 
 function listCountries(source) {
@@ -448,7 +453,7 @@ function getAdmin1(id, opts) {
     .slice(0, 5)
     .map((r) => `${r.name} (${r.id})`);
   const scope = code ? ` in ${code}` : '';
-  throw new Error(`Unknown admin-1 region "${id}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  throw new Error(`Unknown admin-1 region "${fmtId(id)}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
 }
 
 function listAdmin1(countryId, source) {
@@ -570,7 +575,7 @@ function getRiver(name, source) {
       if (near.length >= 5) break;
     }
   }
-  throw new Error(`Unknown river "${name}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  throw new Error(`Unknown river "${fmtId(name)}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
 }
 
 // =========================================================================
@@ -666,7 +671,7 @@ function getLake(name, source) {
       if (near.length >= 5) break;
     }
   }
-  throw new Error(`Unknown lake "${name}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  throw new Error(`Unknown lake "${fmtId(name)}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
 }
 
 // =========================================================================
@@ -825,7 +830,7 @@ function getPlace(name, opts) {
     .slice(0, 5)
     .map((p) => `${p.name} (${p.adm0})`);
   const scope = countryCode ? ` in ${countryCode}` : '';
-  throw new Error(`Unknown place "${name}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+  throw new Error(`Unknown place "${fmtId(name)}"${scope}${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
 }
 
 // =========================================================================
@@ -1013,7 +1018,7 @@ function resolveRegion(target, opts) {
         }
       }
     }
-    throw new Error(`Unknown region "${target}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
+    throw new Error(`Unknown region "${fmtId(target)}"${near.length ? ` — did you mean ${near.join(', ')}?` : ''}`);
   }
 
   throw new Error('Invalid region target: expected [w, s, e, n], string, or { country, admin1 }');
