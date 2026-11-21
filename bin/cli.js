@@ -11,10 +11,12 @@ const { POSES } = require('../engine/lib/people');
 const Lt = require('../engine/lib/letter');
 const { ELEMENT_BOUNDS } = require('../src/layout');
 const { loadSpec, planSpec, renderSpec } = require('../src/spec');
+const ASSETS = require('../src/assets');
 
 const HELP_TEXT = `Usage:
   handdrawn-map render <spec> [options]
   handdrawn-map inspect <kind> [query] [--json]
+  handdrawn-map assets <list|save|path> [args] [options]
   handdrawn-map --help
 
 Commands:
@@ -27,17 +29,29 @@ Commands:
     --seed <str>        Override RNG seed
     --no-border         Omit zebra border frame
     --auto-layout       Enable automatic empty-space placement & overlap avoidance
+    --asset-dir <dir>   Extra local SVG asset directory to load/save
+    --save-assets       Save inline SVG elements to your private local dir (~/.handdrawn-map/elements)
+    --overwrite         Overwrite existing SVG files when used with --save-assets
 
   inspect <kind> [q]    Inspect built-in assets or plan a spec without rasterizing.
     countries [query]   Search Natural Earth countries (id, iso2, name, continent, mainBBox)
     admin1 [query]      Search Natural Earth admin-1 states/provinces (by country or name/zh/ISO)
     places [query]      Search Natural Earth populated places (by country or city name/zh/ja/ko)
     rivers [query]      Search Natural Earth major rivers
-    elements [query]    List built-in illustrated elements and person poses
+    elements [query]    List built-in illustrated elements, local SVG assets, and person poses
     flags [query]       List built-in waving flag codes
     fonts [query]       List registered Latin & CJK fonts
     spec <file>         Validate & plan a spec (projection + layout diagnostics)
+    --asset-dir <dir>   Extra local SVG asset directory to include
     --json              Output machine-readable JSON
+
+  assets <action>       Manage local SVG assets (private per-user by default; never synced).
+    path                Print your private local SVG asset directory path
+    list [query]        List private local and built-in repo SVG assets
+    save <spec>         Extract inline SVGs from a spec into your private local asset dir
+      --asset-dir <dir> Save into a custom local directory instead of ~/.handdrawn-map/elements
+      --to-repo         Explicitly save into this repository's assets/elements/ (maintainer only)
+      --overwrite       Overwrite existing SVG files
 `;
 
 function sanitizeId(raw) {
@@ -70,6 +84,9 @@ async function handleRender(argv) {
         seed: { type: 'string' },
         'no-border': { type: 'boolean' },
         'auto-layout': { type: 'boolean' },
+        'asset-dir': { type: 'string' },
+        'save-assets': { type: 'boolean' },
+        overwrite: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
     });
@@ -108,6 +125,7 @@ async function handleRender(argv) {
   if (values.seed !== undefined) renderOpts.seed = values.seed;
   if (values['no-border']) renderOpts.border = false;
   if (values['auto-layout']) renderOpts.autoLayout = true;
+  if (values['asset-dir']) renderOpts.assetDir = values['asset-dir'];
 
   let loadedSpec;
   try {
@@ -128,6 +146,21 @@ async function handleRender(argv) {
     return 1;
   }
   const elapsedMs = Date.now() - t0;
+
+  if (values['save-assets']) {
+    try {
+      const savedList = ASSETS.saveAssetsFromSpec(loadedSpec, {
+        assetDir: values['asset-dir'],
+        overwrite: Boolean(values.overwrite),
+      });
+      const savedCount = savedList.filter((r) => r.saved).length;
+      const skippedCount = savedList.filter((r) => r.skipped).length;
+      const targetDir = ASSETS.getUserAssetsDir(values['asset-dir']);
+      process.stderr.write(`Saved ${savedCount} SVG asset(s) to ${targetDir}${skippedCount ? ` (${skippedCount} existing skipped)` : ''}\n`);
+    } catch (err) {
+      process.stderr.write(`Warning: failed to save SVG assets: ${err.message}\n`);
+    }
+  }
 
   const { diagnostics } = result;
   const summaryLine =
@@ -166,6 +199,7 @@ function handleInspect(argv) {
       options: {
         json: { type: 'boolean' },
         'auto-layout': { type: 'boolean' },
+        'asset-dir': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
     });
@@ -367,12 +401,15 @@ function handleInspect(argv) {
     const q = query ? query.toLowerCase() : '';
     const elementNames = Object.keys(EL).filter((n) => !q || n.toLowerCase().includes(q));
     const poses = Object.keys(POSES).filter((p) => !q || p.toLowerCase().includes(q) || 'person'.includes(q));
+    const svgAssets = ASSETS.listSvgAssets({ assetDir: values['asset-dir'] })
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || a.source.toLowerCase().includes(q));
     const data = {
       elements: elementNames.map((name) => ({
         name,
         bounds: ELEMENT_BOUNDS[name] || null,
         meta: EL.ELEMENT_META[name] || null,
       })),
+      svgAssets,
       poses,
     };
 
@@ -380,6 +417,9 @@ function handleInspect(argv) {
       process.stdout.write(JSON.stringify(data, null, 2) + '\n');
     } else {
       process.stdout.write(`Elements (${elementNames.length}): ${elementNames.join(', ')}\n`);
+      if (svgAssets.length) {
+        process.stdout.write(`SVG Assets (${svgAssets.length}): ${svgAssets.map((a) => `${a.name}[${a.source}]`).join(', ')}\n`);
+      }
       process.stdout.write(`Person poses (${poses.length}): ${poses.join(', ')}\n`);
     }
     return 0;
@@ -426,7 +466,10 @@ function handleInspect(argv) {
     }
     let plan;
     try {
-      plan = planSpec(query, values['auto-layout'] ? { autoLayout: true } : {});
+      const planOpts = {};
+      if (values['auto-layout']) planOpts.autoLayout = true;
+      if (values['asset-dir']) planOpts.assetDir = values['asset-dir'];
+      plan = planSpec(query, planOpts);
     } catch (err) {
       process.stderr.write(`Error loading spec "${query}": ${err.message}\n`);
       return 1;
@@ -464,6 +507,99 @@ function handleInspect(argv) {
   return 1;
 }
 
+function handleAssets(argv) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      strict: true,
+      allowPositionals: true,
+      options: {
+        json: { type: 'boolean' },
+        'asset-dir': { type: 'string' },
+        'to-repo': { type: 'boolean' },
+        overwrite: { type: 'boolean' },
+        help: { type: 'boolean', short: 'h' },
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`Error: ${err.message}\n`);
+    return 1;
+  }
+
+  const { values, positionals } = parsed;
+  if (values.help) {
+    process.stdout.write(HELP_TEXT);
+    return 0;
+  }
+
+  const action = positionals[0];
+  const arg = positionals[1];
+  const asJson = Boolean(values.json);
+
+  if (action === 'path') {
+    const userDir = ASSETS.getUserAssetsDir(values['asset-dir']);
+    if (asJson) {
+      process.stdout.write(JSON.stringify({ userDir, repoDir: ASSETS.getRepoAssetsDir() }, null, 2) + '\n');
+    } else {
+      process.stdout.write(`${userDir}\n`);
+    }
+    return 0;
+  }
+
+  if (action === 'list') {
+    const q = arg ? arg.toLowerCase() : '';
+    const list = ASSETS.listSvgAssets({ assetDir: values['asset-dir'] })
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || a.source.toLowerCase().includes(q));
+    if (asJson) {
+      process.stdout.write(JSON.stringify(list, null, 2) + '\n');
+    } else {
+      for (const a of list) {
+        process.stdout.write(`${a.name}\t[${a.source}]\t${a.path}\n`);
+      }
+      process.stdout.write(`(${list.length} SVG assets)\n`);
+    }
+    return 0;
+  }
+
+  if (action === 'save') {
+    if (!arg) {
+      process.stderr.write('Error: assets save requires a <spec> file path.\n');
+      return 1;
+    }
+    let loadedSpec;
+    try {
+      loadedSpec = loadSpec(arg);
+    } catch (err) {
+      process.stderr.write(`Error loading spec "${arg}": ${err.message}\n`);
+      return 1;
+    }
+    let savedList;
+    try {
+      savedList = ASSETS.saveAssetsFromSpec(loadedSpec, {
+        assetDir: values['asset-dir'],
+        toRepo: Boolean(values['to-repo']),
+        overwrite: Boolean(values.overwrite),
+      });
+    } catch (err) {
+      process.stderr.write(`Error saving SVG assets: ${err.message}\n`);
+      return 1;
+    }
+    if (asJson) {
+      process.stdout.write(JSON.stringify(savedList, null, 2) + '\n');
+    } else {
+      for (const r of savedList) {
+        process.stdout.write(`${r.saved ? 'SAVED' : 'SKIPPED'}\t${r.name}\t${r.path}\n`);
+      }
+      process.stdout.write(`(${savedList.filter((r) => r.saved).length} saved, ${savedList.filter((r) => r.skipped).length} skipped)\n`);
+    }
+    return 0;
+  }
+
+  process.stderr.write(`Error: unknown assets action "${action || ''}". Supported actions: path, list, save.\n`);
+  return 1;
+}
+
 async function runCli(argv) {
   const args = argv.slice();
   if (args.length === 0) {
@@ -479,6 +615,7 @@ async function runCli(argv) {
   const rest = args.slice(1);
   if (cmd === 'render') return handleRender(rest);
   if (cmd === 'inspect') return handleInspect(rest);
+  if (cmd === 'assets') return handleAssets(rest);
 
   process.stderr.write(`Error: unknown command "${cmd}".\n\n` + HELP_TEXT);
   return 1;

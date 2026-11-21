@@ -6,6 +6,7 @@ const Lt = require('../engine/lib/letter');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
 const SVG = require('./svgDraw');
+const ASSETS = require('./assets');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
 
@@ -400,6 +401,13 @@ module.exports = {
   parseSvg: SVG.parseSvg,
   parsePathD: SVG.parsePathD,
   measureSvg: SVG.measureSvg,
+  // Local-first SVG asset library (private per-user by default)
+  getUserAssetsDir: ASSETS.getUserAssetsDir,
+  getRepoAssetsDir: ASSETS.getRepoAssetsDir,
+  listSvgAssets: ASSETS.listSvgAssets,
+  resolveSvgAsset: ASSETS.resolveSvgAsset,
+  saveSvgAsset: ASSETS.saveSvgAsset,
+  saveAssetsFromSpec: ASSETS.saveAssetsFromSpec,
   // Element bounds & metadata
   ELEMENT_BOUNDS: EL.ELEMENT_BOUNDS,
   ELEMENT_META: EL.ELEMENT_META,

@@ -9,6 +9,7 @@ const { POSES } = require('../engine/lib/people');
 const M = require('./mapPrimitives');
 const EL = require('./elements');
 const SVG = require('./svgDraw');
+const ASSETS = require('./assets');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
 const {
@@ -429,7 +430,18 @@ function validateSpec(inputSpec, opts = {}) {
             warnings.push(`elements[${idx}] references unknown person pose "${el.options.pose}"; falling back to "stand".`);
           }
         } else if (!Object.hasOwn(EL.ELEMENT_BOUNDS, el.type) || typeof EL[el.type] !== 'function') {
-          errors.push(`elements[${idx}] has unknown element type "${el.type}".`);
+          const asset = ASSETS.resolveSvgAsset(el.type, { assetDir: opts.assetDir });
+          if (asset) {
+            el._resolvedAsset = { name: asset.name, source: asset.source, path: asset.path };
+            el.type = 'svg';
+            el.svg = asset.svg;
+            if (!isPlainObject(el.options)) el.options = {};
+            if (el.options.width === undefined && el.options.height === undefined && el.options.scale === undefined) {
+              el.options.width = 18 * (isFiniteNum(el.scale) ? el.scale : 1);
+            }
+          } else {
+            errors.push(`elements[${idx}] has unknown element type "${el.type}".`);
+          }
         }
 
         const hasXY = isFiniteNum(el.x) && isFiniteNum(el.y);
