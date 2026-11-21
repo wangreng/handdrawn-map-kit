@@ -367,6 +367,25 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     return item;
   }
 
+  function rebuildGrid() {
+    for (let i = 0; i < grid.length; i++) {
+      grid[i] &= ~CELL_OCCUPIED;
+    }
+    for (const item of items) {
+      if (item.meta && item.meta.nonBlocking) continue;
+      markOccupied(item);
+    }
+  }
+
+  function isLinked(a, b) {
+    const aOwner = a.meta && a.meta.ownerId;
+    const bOwner = b.meta && b.meta.ownerId;
+    if (aOwner === b.id || bOwner === a.id) return true;
+    if (aOwner && bOwner && aOwner === bOwner) return true;
+    if (a.meta && b.meta && a.meta.groupId && a.meta.groupId === b.meta.groupId) return true;
+    return false;
+  }
+
   function findOverlaps(opts = {}) {
     const pad = opts.pad ?? 0;
     const results = [];
@@ -380,11 +399,7 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
         if (b.meta && b.meta.nonBlocking) continue;
 
         // Skip linked pairs (e.g., element + its label, city + its label, inset + its child).
-        const aOwner = a.meta && a.meta.ownerId;
-        const bOwner = b.meta && b.meta.ownerId;
-        if (aOwner === b.id || bOwner === a.id) continue;
-        if (aOwner && bOwner && aOwner === bOwner) continue;
-        if (a.meta && b.meta && a.meta.groupId && a.meta.groupId === b.meta.groupId) continue;
+        if (isLinked(a, b)) continue;
 
         const ov = overlaps(a, b, pad);
         if (!ov) continue;
@@ -459,6 +474,7 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     if (x0 < safeFrame[0] - eps || y0 < safeFrame[1] - eps || x1 > safeFrame[2] + eps || y1 > safeFrame[3] + eps) {
       return false;
     }
+    if (bw === 0 && bh === 0 && pad === 0) return true;
     const c0 = Math.max(0, Math.floor(x0 / step));
     const c1 = Math.min(cols - 1, Math.floor((x1 - 1e-9) / step));
     const r0 = Math.max(0, Math.floor(y0 / step));
@@ -532,6 +548,463 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     return regions;
   }
 
+  function exactOverlapArea(x, y, bw, bh, pad = 0, ignoreItem = null, list = items) {
+    const cand = { x0: x, y0: y, x1: x + bw, y1: y + bh };
+    let total = 0;
+    for (const other of list) {
+      if (other === ignoreItem) continue;
+      if (other.meta && other.meta.nonBlocking) continue;
+      if (ignoreItem && isLinked(ignoreItem, other)) continue;
+      const ov = overlaps(cand, other, pad);
+      if (ov) total += ov.areaMm2;
+    }
+    return total;
+  }
+
+  function inSafeFrame(x, y, bw, bh) {
+    const eps = 1e-6;
+    return (
+      x >= safeFrame[0] - eps &&
+      y >= safeFrame[1] - eps &&
+      x + bw <= safeFrame[2] + eps &&
+      y + bh <= safeFrame[3] + eps
+    );
+  }
+
+  function anchorInRegion(reg, bw, bh, corner, margin) {
+    const maxX = Math.max(reg.x, reg.x + reg.w - bw);
+    const maxY = Math.max(reg.y, reg.y + reg.h - bh);
+    const mx = Math.min(margin, Math.max(0, reg.w - bw));
+    const my = Math.min(margin, Math.max(0, reg.h - bh));
+
+    let ax;
+    if (corner && corner.includes('left')) ax = reg.x + mx;
+    else if (corner && corner.includes('right')) ax = reg.x + reg.w - bw - mx;
+    else ax = reg.x + (reg.w - bw) / 2;
+
+    let ay;
+    if (corner && corner.includes('top')) ay = reg.y + my;
+    else if (corner && corner.includes('bottom')) ay = reg.y + reg.h - bh - my;
+    else ay = reg.y + (reg.h - bh) / 2;
+
+    ax = Math.min(Math.max(ax, reg.x, safeFrame[0]), maxX, Math.max(safeFrame[0], safeFrame[2] - bw));
+    ay = Math.min(Math.max(ay, reg.y, safeFrame[1]), maxY, Math.max(safeFrame[1], safeFrame[3] - bh));
+    return [ax, ay];
+  }
+
+  function terrainMatchRatio(x, y, bw, bh, terrain) {
+    if (terrain === 'any') return 1;
+    const c0 = Math.max(0, Math.floor(x / step));
+    const c1 = Math.min(cols - 1, Math.floor((x + bw - 1e-9) / step));
+    const r0 = Math.max(0, Math.floor(y / step));
+    const r1 = Math.min(rows - 1, Math.floor((y + bh - 1e-9) / step));
+    let total = 0;
+    let matched = 0;
+    for (let r = r0; r <= r1; r++) {
+      const rowOff = r * cols;
+      for (let c = c0; c <= c1; c++) {
+        const val = grid[rowOff + c];
+        total++;
+        const isLand = Boolean(val & CELL_LAND);
+        if ((terrain === 'sea' && !isLand) || (terrain === 'land' && isLand)) matched++;
+      }
+    }
+    return total > 0 ? matched / total : 1;
+  }
+
+  function placeAuto({
+    w: bw,
+    h: bh,
+    terrain = 'sea',
+    preferredCorners = ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+    margin = 2.0,
+    pad = padding,
+    fallbackAny = true,
+  } = {}) {
+    assertFinite(bw, 'w');
+    assertFinite(bh, 'h');
+    const safeW = safeFrame[2] - safeFrame[0];
+    const safeH = safeFrame[3] - safeFrame[1];
+    if (bw > safeW + 1e-6 || bh > safeH + 1e-6) {
+      return {
+        x: +safeFrame[0].toFixed(2),
+        y: +safeFrame[1].toFixed(2),
+        terrain: 'any',
+        corner: 'top-left',
+        placed: false,
+      };
+    }
+
+    const cornerRank = (c) => {
+      const idx = preferredCorners.indexOf(c);
+      return idx >= 0 ? idx : preferredCorners.length + 1;
+    };
+
+    const terrains = (fallbackAny && terrain !== 'any') ? [terrain, 'any'] : [terrain];
+
+    // Step 1: Try maximal empty regions for each terrain in priority order
+    for (const terr of terrains) {
+      let regions = findEmptyRegions({
+        terrain: terr,
+        minW: bw + margin * 2,
+        minH: bh + margin * 2,
+        maxCount: 8,
+      });
+      if (!regions.length) {
+        regions = findEmptyRegions({ terrain: terr, minW: bw, minH: bh, maxCount: 8 });
+      }
+      if (!regions.length) continue;
+
+      regions.sort((a, b) => (cornerRank(a.corner) - cornerRank(b.corner)) || (b.areaMm2 - a.areaMm2));
+
+      for (const pTry of [pad, 0]) {
+        for (const reg of regions) {
+          const tryCorners = [reg.corner];
+          if (preferredCorners.length && !tryCorners.includes(preferredCorners[0])) {
+            tryCorners.push(preferredCorners[0]);
+          }
+          for (const crn of tryCorners) {
+            for (const mTry of [margin, 0]) {
+              const [ax, ay] = anchorInRegion(reg, bw, bh, crn, mTry);
+              if (inSafeFrame(ax, ay, bw, bh) && exactOverlapArea(ax, ay, bw, bh, pTry) === 0) {
+                return {
+                  x: +ax.toFixed(2),
+                  y: +ay.toFixed(2),
+                  terrain: terr,
+                  corner: classifyCorner(ax, ay, bw, bh, safeFrame),
+                  placed: true,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Step 2: Coarse-to-fine scan across safeFrame (plus explicit corner anchors)
+    const maxX = safeFrame[2] - bw;
+    const maxY = safeFrame[3] - bh;
+    const scanStep = Math.max(step, 2.0);
+    const candidates = [];
+
+    for (const mTry of [margin, 0]) {
+      const xL = Math.min(maxX, safeFrame[0] + mTry);
+      const xR = Math.max(safeFrame[0], maxX - mTry);
+      const yT = Math.min(maxY, safeFrame[1] + mTry);
+      const yB = Math.max(safeFrame[1], maxY - mTry);
+      candidates.push([xL, yT], [xR, yT], [xL, yB], [xR, yB]);
+    }
+
+    for (let y = safeFrame[1]; y <= maxY + 1e-6; y += scanStep) {
+      const cy = Math.min(y, maxY);
+      for (let x = safeFrame[0]; x <= maxX + 1e-6; x += scanStep) {
+        const cx = Math.min(x, maxX);
+        candidates.push([cx, cy]);
+      }
+    }
+
+    let bestZero = null;
+    let bestZeroScore = Infinity;
+    let bestFallback = null;
+    let bestFallbackArea = Infinity;
+
+    for (const [cx, cy] of candidates) {
+      const ovPad = exactOverlapArea(cx, cy, bw, bh, pad);
+      const ovZero = ovPad === 0 ? 0 : exactOverlapArea(cx, cy, bw, bh, 0);
+      const corner = classifyCorner(cx, cy, bw, bh, safeFrame);
+      const cRank = cornerRank(corner);
+      const tRatio = terrainMatchRatio(cx, cy, bw, bh, terrain);
+
+      if (ovZero === 0) {
+        // Lower score is better: strongly prefer pad-free, matching terrain, preferred corner
+        const score = (ovPad > 0 ? 100 : 0) + (1 - tRatio) * 50 + cRank * 5;
+        if (score < bestZeroScore) {
+          bestZeroScore = score;
+          bestZero = {
+            x: +cx.toFixed(2),
+            y: +cy.toFixed(2),
+            terrain: tRatio >= 0.95 ? terrain : 'any',
+            corner,
+            placed: true,
+          };
+        }
+      } else if (ovZero < bestFallbackArea) {
+        bestFallbackArea = ovZero;
+        bestFallback = {
+          x: +cx.toFixed(2),
+          y: +cy.toFixed(2),
+          terrain: 'any',
+          corner,
+          placed: false,
+        };
+      }
+    }
+
+    if (bestZero) return bestZero;
+    if (bestFallback) return bestFallback;
+
+    return {
+      x: +safeFrame[0].toFixed(2),
+      y: +safeFrame[1].toFixed(2),
+      terrain: 'any',
+      corner: 'top-left',
+      placed: false,
+    };
+  }
+
+  function avoidOverlaps({
+    pad = padding,
+    maxRadius = 40,
+    stepMm = 1.5,
+    respectFixed = true,
+  } = {}) {
+    const active = items.filter((it) => !(it.meta && it.meta.nonBlocking));
+    const fixedItems = [];
+    const movable = [];
+    active.forEach((it, idx) => {
+      if (respectFixed && it.fixed) fixedItems.push(it);
+      else movable.push({ item: it, idx });
+    });
+
+    // Higher-priority movable items settle first so lower-priority items yield to them.
+    movable.sort((a, b) => (b.item.priority - a.item.priority) || (a.idx - b.idx));
+
+    const origPos = new Map();
+    for (const { item } of movable) {
+      origPos.set(item.id, { x: item.x, y: item.y });
+    }
+
+    const settled = [...fixedItems];
+    const clampPos = (cx, cy, bw, bh) => {
+      const minX = safeFrame[0];
+      const maxX = Math.max(minX, safeFrame[2] - bw);
+      const minY = safeFrame[1];
+      const maxY = Math.max(minY, safeFrame[3] - bh);
+      return [
+        Math.min(maxX, Math.max(minX, cx)),
+        Math.min(maxY, Math.max(minY, cy)),
+      ];
+    };
+
+    const setItemPos = (item, nx, ny) => {
+      item.x = nx;
+      item.y = ny;
+      item.x0 = nx;
+      item.y0 = ny;
+      item.x1 = nx + item.w;
+      item.y1 = ny + item.h;
+    };
+
+    const dirs8 = [];
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      dirs8.push([Math.cos(a), Math.sin(a)]);
+    }
+    const dirs16 = [];
+    for (let k = 0; k < 16; k++) {
+      const a = (k * Math.PI) / 8;
+      dirs16.push([Math.cos(a), Math.sin(a)]);
+    }
+
+    const findBestPosition = (item, ox, oy, searchPad) => {
+      const bw = item.w;
+      const bh = item.h;
+
+      // Try clamped anchor first (handles pure OOB with no collision)
+      const [cx0, cy0] = clampPos(ox, oy, bw, bh);
+      if (inSafeFrame(cx0, cy0, bw, bh) && exactOverlapArea(cx0, cy0, bw, bh, searchPad, item, settled) === 0) {
+        return { x: cx0, y: cy0, ov: 0 };
+      }
+
+      // Phase 1: Radial ring search around (ox, oy)
+      const stepR = Math.max(0.5, stepMm);
+      for (let r = stepR; r <= maxRadius; r += stepR) {
+        const dirs = r <= 12 ? dirs8 : dirs16;
+        let ringBest = null;
+        let ringDist = Infinity;
+        for (const [dx, dy] of dirs) {
+          const nx = ox + dx * r;
+          const ny = oy + dy * r;
+          if (!inSafeFrame(nx, ny, bw, bh)) continue;
+          if (exactOverlapArea(nx, ny, bw, bh, searchPad, item, settled) === 0) {
+            const d = Math.hypot(nx - ox, ny - oy);
+            if (d < ringDist) {
+              ringDist = d;
+              ringBest = { x: nx, y: ny, ov: 0 };
+            }
+          }
+        }
+        if (ringBest) return ringBest;
+      }
+
+      // Phase 2: Full safeFrame grid scan for closest zero-overlap spot
+      const maxX = safeFrame[2] - bw;
+      const maxY = safeFrame[3] - bh;
+      if (maxX >= safeFrame[0] && maxY >= safeFrame[1]) {
+        const scanStep = Math.max(2.0, step);
+        let gridBest = null;
+        let gridDist = Infinity;
+        for (let gy = safeFrame[1]; gy <= maxY + 1e-6; gy += scanStep) {
+          const ny = Math.min(gy, maxY);
+          for (let gx = safeFrame[0]; gx <= maxX + 1e-6; gx += scanStep) {
+            const nx = Math.min(gx, maxX);
+            if (exactOverlapArea(nx, ny, bw, bh, searchPad, item, settled) === 0) {
+              const d = Math.hypot(nx - ox, ny - oy);
+              if (d < gridDist) {
+                gridDist = d;
+                gridBest = { x: nx, y: ny, ov: 0 };
+              }
+            }
+          }
+        }
+        if (gridBest) return gridBest;
+      }
+
+      return null;
+    };
+
+    for (const { item } of movable) {
+      const orig = origPos.get(item.id);
+      const currentlyFree =
+        inSafeFrame(item.x, item.y, item.w, item.h) &&
+        exactOverlapArea(item.x, item.y, item.w, item.h, pad, item, settled) === 0;
+
+      if (!currentlyFree) {
+        let found = findBestPosition(item, orig.x, orig.y, pad);
+        if (!found && pad > 0) {
+          found = findBestPosition(item, orig.x, orig.y, 0);
+        }
+        if (!found) {
+          // Last resort: minimum overlap position inside safeFrame
+          const [cx0, cy0] = clampPos(orig.x, orig.y, item.w, item.h);
+          let bestX = cx0;
+          let bestY = cy0;
+          let bestOv = exactOverlapArea(cx0, cy0, item.w, item.h, 0, item, settled);
+          const maxX = Math.max(safeFrame[0], safeFrame[2] - item.w);
+          const maxY = Math.max(safeFrame[1], safeFrame[3] - item.h);
+          const scanStep = Math.max(3.0, step * 1.5);
+          for (let gy = safeFrame[1]; gy <= maxY + 1e-6; gy += scanStep) {
+            const ny = Math.min(gy, maxY);
+            for (let gx = safeFrame[0]; gx <= maxX + 1e-6; gx += scanStep) {
+              const nx = Math.min(gx, maxX);
+              const ov = exactOverlapArea(nx, ny, item.w, item.h, 0, item, settled);
+              if (ov < bestOv) {
+                bestOv = ov;
+                bestX = nx;
+                bestY = ny;
+              }
+            }
+          }
+          found = { x: bestX, y: bestY, ov: bestOv };
+        }
+        setItemPos(item, +found.x.toFixed(3), +found.y.toFixed(3));
+      }
+      settled.push(item);
+    }
+
+    rebuildGrid();
+
+    const moved = [];
+    for (const { item } of movable) {
+      const orig = origPos.get(item.id);
+      const dx = item.x - orig.x;
+      const dy = item.y - orig.y;
+      if (Math.hypot(dx, dy) > 1e-4) {
+        moved.push({
+          id: item.id,
+          dx: +dx.toFixed(3),
+          dy: +dy.toFixed(3),
+          from: [orig.x, orig.y],
+          to: [item.x, item.y],
+        });
+      }
+    }
+
+    return {
+      moved,
+      unresolved: findOverlaps({ pad: 0 }),
+    };
+  }
+
+  function routeCallout(fromPt, toBoxOrPt) {
+    const from = [fromPt[0], fromPt[1]];
+    let to;
+    if (Array.isArray(toBoxOrPt)) {
+      to = [toBoxOrPt[0], toBoxOrPt[1]];
+    } else if (toBoxOrPt && typeof toBoxOrPt === 'object') {
+      const bx0 = toBoxOrPt.x0 ?? toBoxOrPt.x;
+      const by0 = toBoxOrPt.y0 ?? toBoxOrPt.y;
+      const bx1 = toBoxOrPt.x1 ?? (bx0 + toBoxOrPt.w);
+      const by1 = toBoxOrPt.y1 ?? (by0 + toBoxOrPt.h);
+      const edgePts = [
+        [(bx0 + bx1) / 2, by0],
+        [(bx0 + bx1) / 2, by1],
+        [bx0, (by0 + by1) / 2],
+        [bx1, (by0 + by1) / 2],
+      ];
+      let best = edgePts[0];
+      let bestD = Infinity;
+      for (const ep of edgePts) {
+        const d = Math.hypot(ep[0] - from[0], ep[1] - from[1]);
+        if (d < bestD) {
+          bestD = d;
+          best = ep;
+        }
+      }
+      to = best;
+    } else {
+      to = [from[0], from[1]];
+    }
+
+    const dx = to[0] - from[0];
+    const dy = to[1] - from[1];
+    const dist = Math.hypot(dx, dy);
+    const mx = (from[0] + to[0]) / 2;
+    const my = (from[1] + to[1]) / 2;
+    if (dist < 1e-3) {
+      return { from, to, bendX: mx, bendY: my };
+    }
+
+    const nx = -dy / dist;
+    const ny = dx / dist;
+    const maxBend = Math.min(28, dist * 0.55);
+    const mags = [0, Math.min(8, maxBend), -Math.min(8, maxBend), Math.min(16, maxBend), -Math.min(16, maxBend), maxBend, -maxBend];
+    const bends = mags.map((m) => [mx + nx * m, my + ny * m]);
+
+    const scoreBend = (bx, by) => {
+      let hits = 0;
+      for (let k = 1; k <= 7; k++) {
+        const t = k / 8;
+        const u = 1 - t;
+        const px = u * u * from[0] + 2 * u * t * bx + t * t * to[0];
+        const py = u * u * from[1] + 2 * u * t * by + t * t * to[1];
+        const c = Math.floor(px / step);
+        const r = Math.floor(py / step);
+        if (c >= 0 && c < cols && r >= 0 && r < rows) {
+          if (grid[r * cols + c] & CELL_OCCUPIED) hits++;
+        }
+      }
+      return hits;
+    };
+
+    let bestBend = bends[0];
+    let bestHits = Infinity;
+    for (const b of bends) {
+      const hits = scoreBend(b[0], b[1]);
+      if (hits < bestHits) {
+        bestHits = hits;
+        bestBend = b;
+      }
+    }
+
+    return {
+      from,
+      to,
+      bendX: +bestBend[0].toFixed(2),
+      bendY: +bestBend[1].toFixed(2),
+    };
+  }
+
   function toDiagnostics({ ppm = 10, warnings = [] } = {}) {
     let interiorCells = 0;
     let landCells = 0;
@@ -602,12 +1075,17 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     grid,
     items,
     setLandPolygons,
+    rebuildGrid,
     register,
     overlaps,
     findOverlaps,
     findOutOfBounds,
     findEmptyRegions,
     isFree,
+    placeAuto,
+    avoidOverlaps,
+    resolveOverlaps: avoidOverlaps,
+    routeCallout,
     toDiagnostics,
   };
 }

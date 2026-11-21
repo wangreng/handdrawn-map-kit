@@ -4,10 +4,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
-const { loadCountries } = require('../src/geo');
+const GEO = require('../src/geo');
 const EL = require('../src/elements');
 const { FLAGS } = require('../src/flags');
 const { POSES } = require('../engine/lib/people');
+const Lt = require('../engine/lib/letter');
 const { ELEMENT_BOUNDS } = require('../src/layout');
 const { loadSpec, planSpec, renderSpec } = require('../src/spec');
 
@@ -25,12 +26,16 @@ Commands:
     --diagnostics <p|-> Write layout diagnostics JSON to file or "-" for stdout
     --seed <str>        Override RNG seed
     --no-border         Omit zebra border frame
-    --auto-layout       Enable auto-layout hints (extended in PR 5)
+    --auto-layout       Enable automatic empty-space placement & overlap avoidance
 
   inspect <kind> [q]    Inspect built-in assets or plan a spec without rasterizing.
     countries [query]   Search Natural Earth countries (id, iso2, name, continent, mainBBox)
+    admin1 [query]      Search Natural Earth admin-1 states/provinces (by country or name/zh/ISO)
+    places [query]      Search Natural Earth populated places (by country or city name/zh/ja/ko)
+    rivers [query]      Search Natural Earth major rivers
     elements [query]    List built-in illustrated elements and person poses
     flags [query]       List built-in waving flag codes
+    fonts [query]       List registered Latin & CJK fonts
     spec <file>         Validate & plan a spec (projection + layout diagnostics)
     --json              Output machine-readable JSON
 `;
@@ -135,8 +140,13 @@ async function handleRender(argv) {
     process.stderr.write(summaryLine);
   } else if (values.diagnostics) {
     const diagPath = values.diagnostics;
-    fs.mkdirSync(path.dirname(path.resolve(diagPath)), { recursive: true });
-    fs.writeFileSync(diagPath, JSON.stringify(diagnostics, null, 2) + '\n', 'utf8');
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(diagPath)), { recursive: true });
+      fs.writeFileSync(diagPath, JSON.stringify(diagnostics, null, 2) + '\n', 'utf8');
+    } catch (err) {
+      process.stderr.write(`Error writing diagnostics "${diagPath}": ${err.message}\n`);
+      return 1;
+    }
     process.stdout.write(summaryLine);
     process.stdout.write(`Diagnostics written to ${diagPath}\n`);
   } else {
@@ -155,6 +165,7 @@ function handleInspect(argv) {
       allowPositionals: true,
       options: {
         json: { type: 'boolean' },
+        'auto-layout': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
     });
@@ -174,13 +185,13 @@ function handleInspect(argv) {
   const asJson = Boolean(values.json);
 
   if (!kind) {
-    process.stderr.write('Error: missing inspect target (countries | elements | flags | spec).\n');
+    process.stderr.write('Error: missing inspect target (countries | admin1 | places | rivers | elements | flags | fonts | spec).\n');
     return 1;
   }
 
   if (kind === 'countries') {
     const q = query ? query.toLowerCase() : '';
-    const { countries } = loadCountries();
+    const { countries } = GEO.loadCountries();
     const matches = countries
       .filter((c) => {
         if (!q) return true;
@@ -210,6 +221,148 @@ function handleInspect(argv) {
     return 0;
   }
 
+  if (kind === 'admin1') {
+    let matches = [];
+    if (query) {
+      const country = GEO.findCountry(query);
+      if (country) {
+        matches = GEO.listAdmin1(country.id);
+      } else {
+        const q = query.toLowerCase();
+        const qNorm = GEO.norm(query);
+        const ds = GEO.loadAdmin1();
+        matches = ds.regions
+          .filter((r) => (
+            (r.id && r.id.toLowerCase().includes(q)) ||
+            (r.iso && r.iso.toLowerCase().includes(q)) ||
+            (r.name && (r.name.toLowerCase().includes(q) || GEO.norm(r.name).includes(qNorm))) ||
+            (r.zh && r.zh.includes(query)) ||
+            (r.local && r.local.toLowerCase().includes(q)) ||
+            (r.adm0 && r.adm0.toLowerCase().includes(q)) ||
+            (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+          ))
+          .map((r) => ({
+            id: r.id,
+            adm0: r.adm0,
+            name: r.name,
+            zh: r.zh,
+            local: r.local,
+            region: r.region,
+            type: r.type,
+            bbox: r.bbox,
+            mainBBox: r.mainBBox,
+          }));
+      }
+    } else {
+      const ds = GEO.loadAdmin1();
+      matches = ds.regions.map((r) => ({
+        id: r.id,
+        adm0: r.adm0,
+        name: r.name,
+        zh: r.zh,
+        local: r.local,
+        region: r.region,
+        type: r.type,
+        bbox: r.bbox,
+        mainBBox: r.mainBBox,
+      }));
+    }
+
+    if (asJson) {
+      process.stdout.write(JSON.stringify(matches, null, 2) + '\n');
+    } else {
+      for (const r of matches) {
+        process.stdout.write(`${r.id || '--'}\t${r.adm0}\t${r.name}${r.zh ? ` (${r.zh})` : ''}\t[${r.mainBBox.map((n) => n.toFixed(1)).join(', ')}]\n`);
+      }
+      process.stdout.write(`(${matches.length} admin1 regions)\n`);
+    }
+    return 0;
+  }
+
+  if (kind === 'places') {
+    const ds = GEO.loadPlaces();
+    let matches = ds.places;
+    if (query) {
+      const country = GEO.findCountry(query);
+      const q = query.toLowerCase();
+      const qNorm = GEO.norm(query);
+      if (country) {
+        matches = ds.places.filter((p) => p.adm0 === country.id);
+      } else {
+        matches = ds.places.filter((p) => (
+          (p.name && (p.name.toLowerCase().includes(q) || GEO.norm(p.name).includes(qNorm))) ||
+          (p.ascii && p.ascii.toLowerCase().includes(q)) ||
+          (p.zh && p.zh.includes(query)) ||
+          (p.ja && p.ja.includes(query)) ||
+          (p.ko && p.ko.includes(query)) ||
+          (p.adm0 && p.adm0.toLowerCase().includes(q)) ||
+          (p.adm1 && p.adm1.toLowerCase().includes(q)) ||
+          (Array.isArray(p.names) && p.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+        ));
+      }
+    }
+    const sorted = matches
+      .slice()
+      .sort((a, b) => (Number(!!b.capital) - Number(!!a.capital)) || ((b.pop || 0) - (a.pop || 0)))
+      .map((p) => ({
+        name: p.name,
+        zh: p.zh,
+        ja: p.ja,
+        ko: p.ko,
+        adm0: p.adm0,
+        adm1: p.adm1,
+        lon: p.lon,
+        lat: p.lat,
+        pop: p.pop,
+        rank: p.rank,
+        capital: Boolean(p.capital),
+      }));
+
+    if (asJson) {
+      process.stdout.write(JSON.stringify(sorted, null, 2) + '\n');
+    } else {
+      for (const p of sorted) {
+        const star = p.capital ? '*' : ' ';
+        process.stdout.write(`${star}\t${p.adm0}\t${p.name}${p.zh ? ` (${p.zh})` : ''}\t${p.lon.toFixed(2)}, ${p.lat.toFixed(2)}\n`);
+      }
+      process.stdout.write(`(${sorted.length} places)\n`);
+    }
+    return 0;
+  }
+
+  if (kind === 'rivers') {
+    const ds = GEO.loadRivers();
+    const q = query ? query.toLowerCase() : '';
+    const qNorm = query ? GEO.norm(query) : '';
+    const matches = ds.rivers
+      .filter((r) => {
+        if (!q) return true;
+        return (
+          (r.name && (r.name.toLowerCase().includes(q) || GEO.norm(r.name).includes(qNorm))) ||
+          (r.zh && r.zh.includes(query)) ||
+          (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+        );
+      })
+      .sort((a, b) => ((a.rank ?? 99) - (b.rank ?? 99)) || String(a.name || '').localeCompare(String(b.name || '')))
+      .map((r) => ({
+        name: r.name,
+        zh: r.zh,
+        kind: r.kind,
+        rank: r.rank,
+        bbox: r.bbox,
+      }));
+
+    if (asJson) {
+      process.stdout.write(JSON.stringify(matches, null, 2) + '\n');
+    } else {
+      for (const r of matches) {
+        process.stdout.write(`r${r.rank ?? '-'}\t${r.name || '--'}${r.zh ? ` (${r.zh})` : ''}\t${r.kind || ''}\n`);
+      }
+      process.stdout.write(`(${matches.length} rivers)\n`);
+    }
+    return 0;
+  }
+
   if (kind === 'elements') {
     const q = query ? query.toLowerCase() : '';
     const elementNames = Object.keys(EL).filter((n) => !q || n.toLowerCase().includes(q));
@@ -218,6 +371,7 @@ function handleInspect(argv) {
       elements: elementNames.map((name) => ({
         name,
         bounds: ELEMENT_BOUNDS[name] || null,
+        meta: EL.ELEMENT_META[name] || null,
       })),
       poses,
     };
@@ -242,6 +396,29 @@ function handleInspect(argv) {
     return 0;
   }
 
+  if (kind === 'fonts') {
+    const q = query ? query.toLowerCase() : '';
+    const fonts = Lt.listFonts().filter((f) => {
+      if (!q) return true;
+      return (
+        (f.name && f.name.toLowerCase().includes(q)) ||
+        (f.source && f.source.toLowerCase().includes(q)) ||
+        (Array.isArray(f.scripts) && f.scripts.some((s) => s.toLowerCase().includes(q))) ||
+        (Array.isArray(f.faces) && f.faces.some((s) => s.toLowerCase().includes(q)))
+      );
+    });
+
+    if (asJson) {
+      process.stdout.write(JSON.stringify(fonts, null, 2) + '\n');
+    } else {
+      for (const f of fonts) {
+        process.stdout.write(`${f.name}\t[${(f.scripts || []).join(',')}]\t(${f.source || 'unknown'})\n`);
+      }
+      process.stdout.write(`(${fonts.length} fonts)\n`);
+    }
+    return 0;
+  }
+
   if (kind === 'spec') {
     if (!query) {
       process.stderr.write('Error: inspect spec requires a <file> path.\n');
@@ -249,7 +426,7 @@ function handleInspect(argv) {
     }
     let plan;
     try {
-      plan = planSpec(query);
+      plan = planSpec(query, values['auto-layout'] ? { autoLayout: true } : {});
     } catch (err) {
       process.stderr.write(`Error loading spec "${query}": ${err.message}\n`);
       return 1;
@@ -283,7 +460,7 @@ function handleInspect(argv) {
     return plan.ok ? 0 : 1;
   }
 
-  process.stderr.write(`Error: unknown inspect kind "${kind}". Supported kinds: countries, elements, flags, spec.\n`);
+  process.stderr.write(`Error: unknown inspect kind "${kind}". Supported kinds: countries, admin1, places, rivers, elements, flags, fonts, spec.\n`);
   return 1;
 }
 

@@ -1091,6 +1091,7 @@ function resolveRegion(target, opts) {
         kind: target.adm0 ? 'admin1' : 'country',
         bbox,
         mainBBox,
+        polygons: target.polygons,
         feature: target,
       };
     }
@@ -1100,11 +1101,11 @@ function resolveRegion(target, opts) {
         source: o.admin1Source,
         countrySource: o.countrySource ?? o.source,
       });
-      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, polygons: r.polygons, feature: r };
     }
     if (target.country != null) {
       const c = getCountry(target.country, o.countrySource ?? o.source);
-      return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
+      return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, polygons: c.polygons, feature: c };
     }
     if (Array.isArray(target.bbox)) {
       return resolveRegion(target.bbox, o);
@@ -1124,22 +1125,22 @@ function resolveRegion(target, opts) {
         source: o.admin1Source,
         countrySource: o.countrySource ?? o.source,
       });
-      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+      return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, polygons: r.polygons, feature: r };
     }
 
     // Precedence 2: ISO-3166-2 code (e.g. 'CN-SC', 'US-CA')
     if (ISO_3166_2_RE.test(trimmed)) {
       const r = findAdmin1(trimmed, { source: o.admin1Source });
-      if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+      if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, polygons: r.polygons, feature: r };
     }
 
     // Precedence 3: Country before Admin-1 (preserves backward compat & lazy loading)
     const c = findCountry(trimmed, o.countrySource ?? o.source);
-    if (c) return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
+    if (c) return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, polygons: c.polygons, feature: c };
 
     // Precedence 4: Admin-1 fallback
     const r = findAdmin1(trimmed, { source: o.admin1Source });
-    if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
+    if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, polygons: r.polygons, feature: r };
 
     // Build helpful suggestions across countries and admin-1
     const q = norm(trimmed);

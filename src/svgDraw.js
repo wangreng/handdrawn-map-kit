@@ -1129,17 +1129,19 @@ function prepareSvg(svgOrPaths, x = 0, y = 0, opts = {}) {
   // Compute target scale (sx, sy) preserving aspect ratio if only w or h is given
   let sx = 1;
   let sy = 1;
-  const hasW = opts.w != null && Number.isFinite(opts.w) && opts.w > 0;
-  const hasH = opts.h != null && Number.isFinite(opts.h) && opts.h > 0;
+  const targetW = opts.w ?? opts.width;
+  const targetH = opts.h ?? opts.height;
+  const hasW = targetW != null && Number.isFinite(targetW) && targetW > 0;
+  const hasH = targetH != null && Number.isFinite(targetH) && targetH > 0;
   if (hasW && hasH) {
-    sx = vbW > 0 ? opts.w / vbW : 1;
-    sy = vbH > 0 ? opts.h / vbH : 1;
+    sx = vbW > 0 ? targetW / vbW : 1;
+    sy = vbH > 0 ? targetH / vbH : 1;
   } else if (hasW) {
-    const s = vbW > 0 ? opts.w / vbW : 1;
+    const s = vbW > 0 ? targetW / vbW : 1;
     sx = s;
     sy = s;
   } else if (hasH) {
-    const s = vbH > 0 ? opts.h / vbH : 1;
+    const s = vbH > 0 ? targetH / vbH : 1;
     sx = s;
     sy = s;
   } else if (opts.scale != null && Number.isFinite(opts.scale)) {

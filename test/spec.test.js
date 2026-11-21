@@ -105,6 +105,7 @@ test('validateSpec reports errors, warns on unknown top-level keys, and accepts 
 
 test('planSpec plans projection and layout diagnostics without rasterizing', () => {
   const plan = planSpec({
+    schemaVersion: 1,
     meta: { id: 'kor-plan' },
     canvas: { w: 150, h: 100, ppm: 2 },
     geo: { fit: { target: 'KOR', margin: 6 }, focus: ['KOR'], neighbors: false },
@@ -129,6 +130,7 @@ test('renderSpec renders valid PNG, is deterministic by seed, supports border:fa
 
   const origLand = PALETTE.land;
   const spec = {
+    schemaVersion: 1,
     meta: { id: 'mini-kor', seed: 'det-seed-42' },
     canvas: { w: 120, h: 80, ppm: 2 },
     style: { palette: { land: '#e5d5b0', ocean: '#bfd8e6' } },
@@ -232,11 +234,13 @@ test('renderSpec preserves geo.land color alignment when an earlier entry has < 
 
   const validPoly = { pts: [[25, 25], [75, 25], [75, 55], [25, 55]], color: '#00aa00' };
   const baseSpec = {
+    schemaVersion: 1,
     meta: { id: 'land-align', seed: 'land-seed-7' },
     canvas: { w: 100, h: 80, ppm: 2 },
     geo: { waterlines: false, land: [validPoly] },
   };
   const withDegenerate = {
+    schemaVersion: 1,
     meta: { id: 'land-align', seed: 'land-seed-7' },
     canvas: { w: 100, h: 80, ppm: 2 },
     geo: {
