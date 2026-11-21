@@ -679,4 +679,72 @@ test('Group 8: inline bilingual with secondarySpacing aligns accurately for righ
   }
 });
 
+test('Group 8: map.city forwards secondarySpacing in both inline and stack bilingual layouts', () => {
+  const m0 = createMap({ w: 140, h: 70, ppm: 5, ocean: false, border: false, seed: 'city-secsp' });
+  const m1 = createMap({ w: 140, h: 70, ppm: 5, ocean: false, border: false, seed: 'city-secsp' });
+
+  // Inline layout
+  const bbInline0 = m0.city(70, 28, '北京', { capital: true, sub: 'BEIJING', bilingualLayout: 'inline', secondarySpacing: 0 });
+  const bbInlineS = m1.city(70, 28, '北京', { capital: true, sub: 'BEIJING', bilingualLayout: 'inline', secondarySpacing: 0.45 });
+  assertValidBBox(bbInline0, 'city-inline-0');
+  assertValidBBox(bbInlineS, 'city-inline-S');
+  assert.ok(
+    bbInlineS.secondary.w > bbInline0.secondary.w + 2,
+    `inline secondary width (${bbInlineS.secondary.w.toFixed(2)}) > 0-spacing (${bbInline0.secondary.w.toFixed(2)})`,
+  );
+  assert.ok(
+    bbInlineS.w > bbInline0.w + 2,
+    `inline total width (${bbInlineS.w.toFixed(2)}) > 0-spacing (${bbInline0.w.toFixed(2)})`,
+  );
+
+  // Stack layout
+  const bbStack0 = m0.city(70, 50, '成都', { sub: 'CHENGDU', bilingualLayout: 'stack', secondarySpacing: 0 });
+  const bbStackS = m1.city(70, 50, '成都', { sub: 'CHENGDU', bilingualLayout: 'stack', secondarySpacing: 0.45 });
+  assertValidBBox(bbStack0, 'city-stack-0');
+  assertValidBBox(bbStackS, 'city-stack-S');
+  assert.ok(
+    bbStackS.secondary.w > bbStack0.secondary.w + 2,
+    `stack secondary width (${bbStackS.secondary.w.toFixed(2)}) > 0-spacing (${bbStack0.secondary.w.toFixed(2)})`,
+  );
+  assert.ok(
+    bbStackS.w > bbStack0.w + 2,
+    `stack total width (${bbStackS.w.toFixed(2)}) > 0-spacing (${bbStack0.w.toFixed(2)})`,
+  );
+});
+
+test('Group 8: drawCartouche() narrow w=45 long bilingual subtitle stays strictly within x + w - 1.5', () => {
+  const x = 10, y = 10, w = 45, h = 50;
+  const innerRight = x + w - 1.5;
+  const map = createMap({ w: 80, h: 70, ppm: 6, ocean: false, border: false, seed: 'cart-narrow-sub' });
+
+  let subBb = null;
+  const origWriteBi = map.P.writeBilingual.bind(map.P);
+  const origItalic = map.P.italic.bind(map.P);
+  map.P.writeBilingual = (prim, sec, tx, ty, o) => {
+    const bb = origWriteBi(prim, sec, tx, ty, o);
+    if (Math.abs(ty - (y + 16.4)) < 0.2) subBb = bb;
+    return bb;
+  };
+  map.P.italic = (txt, tx, ty, o) => {
+    const bb = origItalic(txt, tx, ty, o);
+    if (Math.abs(ty - (y + 16.4)) < 0.2) subBb = bb;
+    return bb;
+  };
+
+  map.cartouche(x, y, w, h, {
+    country: '中国',
+    subtitle: '手绘文化历史地理全图',
+    subtitleSub: 'Illustrated Cultural & Historical Atlas',
+    flag: 'jp',
+  });
+
+  assert.ok(subBb, 'subtitle was drawn');
+  assertValidBBox(subBb, 'cartouche-narrow-sub');
+  assert.ok(
+    subBb.x1 <= innerRight,
+    `narrow cartouche bilingual subtitle x1 (${subBb.x1.toFixed(2)}) must fit <= innerRight (${innerRight})`,
+  );
+});
+
+
 

@@ -537,35 +537,42 @@ function drawCity(P, x, y, name, o = {}) {
   P.dot(x, y, o.capital ? 1.35 : 0.85, o.capital ? PALETTE.crimson : PALETTE.ink);
   if (o.capital) P.outline([D.ell(x, y, 2.0, 2.0)], { nib: 0.16, color: PALETTE.crimson });
   if (name) {
-    const size = o.size ?? (o.capital ? 3.2 : 2.3);
+    const {
+      capital,
+      dx: optDx,
+      dy: optDy,
+      sub,
+      bilingualLayout,
+      layout: optLayout,
+      subSize: optSubSize,
+      subFace,
+      subColor,
+      ...typoOpts
+    } = o;
+    const size = o.size ?? (capital ? 3.2 : 2.3);
     const textOpts = {
-      face: o.face || (o.capital ? 'serif-bold' : 'sans-bold'),
+      ...typoOpts,
+      face: o.face || (capital ? 'serif-bold' : 'sans-bold'),
       size,
       align: o.align ?? 'center',
-      color: o.color || (o.capital ? PALETTE.crimson : PALETTE.ink),
+      color: o.color || (capital ? PALETTE.crimson : PALETTE.ink),
     };
-    if (o.halo !== undefined) textOpts.halo = o.halo;
-    if (o.spacing !== undefined) textOpts.spacing = o.spacing;
-    if (o.angle !== undefined) textOpts.angle = o.angle;
-    if (o.rotateDeg !== undefined) textOpts.rotateDeg = o.rotateDeg;
 
-    if (o.sub) {
-      const layout = o.bilingualLayout || o.layout || 'stack';
-      const subSize = o.secondarySize ?? o.subSize ?? size * 0.68;
+    if (sub) {
+      const layout = bilingualLayout || optLayout || 'stack';
+      const subSize = o.secondarySize ?? optSubSize ?? size * 0.68;
       const defaultDy = layout === 'stack' ? -(2.2 + size * 0.35 + subSize * 1.05) : -2.2;
-      const dx = o.dx ?? 0, dy = o.dy ?? defaultDy;
-      return P.writeBilingual(name, o.sub, x + dx, y + dy, {
+      const dx = optDx ?? 0, dy = optDy ?? defaultDy;
+      return P.writeBilingual(name, sub, x + dx, y + dy, {
         ...textOpts,
         layout,
         secondarySize: subSize,
-        ...(o.secondaryFace || o.subFace ? { secondaryFace: o.secondaryFace || o.subFace } : {}),
-        ...(o.secondaryColor || o.subColor ? { secondaryColor: o.secondaryColor || o.subColor } : {}),
-        ...(o.sep !== undefined ? { sep: o.sep } : {}),
-        ...(o.gap !== undefined ? { gap: o.gap } : {}),
+        ...(o.secondaryFace || subFace ? { secondaryFace: o.secondaryFace || subFace } : {}),
+        ...(o.secondaryColor || subColor ? { secondaryColor: o.secondaryColor || subColor } : {}),
       });
     }
 
-    const dx = o.dx ?? 0, dy = o.dy ?? -2.2;
+    const dx = optDx ?? 0, dy = optDy ?? -2.2;
     return P.text(name, x + dx, y + dy, textOpts);
   }
   return null;
@@ -693,29 +700,40 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
 
   // Subtitle (with optional bilingual secondary via info.subtitleSub or info.sub)
-  const maxSubW = Math.max(12, w - 11.6);
+  const maxSubW = Math.max(4, w - 11.6);
   const secondarySub = info.subtitleSub || info.sub;
   if (info.subtitle && secondarySub) {
-    let subSize = 2.7;
-    const estW = Lt.measure(`${info.subtitle}  ·  ${secondarySub}`, 'serif-bold', subSize);
-    if (estW > maxSubW && estW > 0) subSize = Math.max(1.5, subSize * (maxSubW / estW));
-    P.writeBilingual(info.subtitle, secondarySub, x + 5.8, y + 16.4, {
-      face: 'serif-bold',
-      size: subSize,
-      align: 'left',
-      color: PALETTE.crimson,
-      slant: 0.22,
-      layout: 'inline',
-      sep: '  ·  ',
-    });
+    const sep = '  ·  ';
+    const combined = `${info.subtitle}${sep}${secondarySub}`;
+    const { text: fittedSub, size: subSize } = fitTextToWidth(combined, 'serif-bold', 2.7, maxSubW, 1.5);
+    const prefix = `${info.subtitle}${sep}`;
+    if (fittedSub === combined) {
+      P.writeBilingual(info.subtitle, secondarySub, x + 5.8, y + 16.4, {
+        face: 'serif-bold',
+        size: subSize,
+        align: 'left',
+        color: PALETTE.crimson,
+        slant: 0.22,
+        layout: 'inline',
+        sep,
+      });
+    } else if (fittedSub.startsWith(prefix)) {
+      P.writeBilingual(info.subtitle, fittedSub.slice(prefix.length), x + 5.8, y + 16.4, {
+        face: 'serif-bold',
+        size: subSize,
+        align: 'left',
+        color: PALETTE.crimson,
+        slant: 0.22,
+        layout: 'inline',
+        sep,
+      });
+    } else {
+      P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
+    }
   } else if (info.subtitle || secondarySub) {
     const subText = info.subtitle || secondarySub;
-    let subSize = 2.7;
-    const measuredSubW = Lt.measure(subText, 'serif-bold', subSize);
-    if (measuredSubW > maxSubW && measuredSubW > 0) {
-      subSize = Math.max(1.5, subSize * (maxSubW / measuredSubW));
-    }
-    P.italic(subText, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
+    const { text: fittedSub, size: subSize } = fitTextToWidth(subText, 'serif-bold', 2.7, maxSubW, 1.5);
+    P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
   }
 
   // Divider line
