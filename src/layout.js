@@ -612,6 +612,27 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     return total > 0 ? matched / total : 1;
   }
 
+  function roundInSafeFrame(nx, ny, bw, bh, decimals = 2) {
+    const factor = 10 ** decimals;
+    let rx = Math.round(nx * factor) / factor;
+    let ry = Math.round(ny * factor) / factor;
+    const minX = safeFrame[0];
+    const maxX = safeFrame[2] - bw;
+    const minY = safeFrame[1];
+    const maxY = safeFrame[3] - bh;
+    if (maxX >= minX - 1e-9) {
+      if (rx < minX) rx = Math.ceil(minX * factor) / factor;
+      if (rx > maxX) rx = Math.floor(maxX * factor) / factor;
+      if (rx < minX || rx > maxX) rx = Math.min(maxX, Math.max(minX, nx));
+    }
+    if (maxY >= minY - 1e-9) {
+      if (ry < minY) ry = Math.ceil(minY * factor) / factor;
+      if (ry > maxY) ry = Math.floor(maxY * factor) / factor;
+      if (ry < minY || ry > maxY) ry = Math.min(maxY, Math.max(minY, ny));
+    }
+    return [rx, ry];
+  }
+
   function placeAuto({
     w: bw,
     h: bh,
@@ -667,11 +688,12 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
             for (const mTry of [margin, 0]) {
               const [ax, ay] = anchorInRegion(reg, bw, bh, crn, mTry);
               if (inSafeFrame(ax, ay, bw, bh) && exactOverlapArea(ax, ay, bw, bh, pTry) === 0) {
+                const [rx, ry] = roundInSafeFrame(ax, ay, bw, bh, 2);
                 return {
-                  x: +ax.toFixed(2),
-                  y: +ay.toFixed(2),
+                  x: rx,
+                  y: ry,
                   terrain: terr,
-                  corner: classifyCorner(ax, ay, bw, bh, safeFrame),
+                  corner: classifyCorner(rx, ry, bw, bh, safeFrame),
                   placed: true,
                 };
               }
@@ -720,9 +742,10 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
         const score = (ovPad > 0 ? 100 : 0) + (1 - tRatio) * 50 + cRank * 5;
         if (score < bestZeroScore) {
           bestZeroScore = score;
+          const [rx, ry] = roundInSafeFrame(cx, cy, bw, bh, 2);
           bestZero = {
-            x: +cx.toFixed(2),
-            y: +cy.toFixed(2),
+            x: rx,
+            y: ry,
             terrain: tRatio >= 0.95 ? terrain : 'any',
             corner,
             placed: true,
@@ -730,9 +753,10 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
         }
       } else if (ovZero < bestFallbackArea) {
         bestFallbackArea = ovZero;
+        const [rx, ry] = roundInSafeFrame(cx, cy, bw, bh, 2);
         bestFallback = {
-          x: +cx.toFixed(2),
-          y: +cy.toFixed(2),
+          x: rx,
+          y: ry,
           terrain: 'any',
           corner,
           placed: false,
@@ -771,7 +795,7 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
 
     const origPos = new Map();
     for (const { item } of movable) {
-      origPos.set(item.id, { x: item.x, y: item.y });
+      origPos.set(item, { x: item.x, y: item.y });
     }
 
     const settled = [...fixedItems];
@@ -864,7 +888,7 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
     };
 
     for (const { item } of movable) {
-      const orig = origPos.get(item.id);
+      const orig = origPos.get(item);
       const currentlyFree =
         inSafeFrame(item.x, item.y, item.w, item.h) &&
         exactOverlapArea(item.x, item.y, item.w, item.h, pad, item, settled) === 0;
@@ -897,7 +921,8 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
           }
           found = { x: bestX, y: bestY, ov: bestOv };
         }
-        setItemPos(item, +found.x.toFixed(3), +found.y.toFixed(3));
+        const [rx, ry] = roundInSafeFrame(found.x, found.y, item.w, item.h, 3);
+        setItemPos(item, rx, ry);
       }
       settled.push(item);
     }
@@ -906,7 +931,7 @@ function createLayout({ w = 300, h = 200, inner = 8.0, gridStep = 2.0, padding =
 
     const moved = [];
     for (const { item } of movable) {
-      const orig = origPos.get(item.id);
+      const orig = origPos.get(item);
       const dx = item.x - orig.x;
       const dy = item.y - orig.y;
       if (Math.hypot(dx, dy) > 1e-4) {

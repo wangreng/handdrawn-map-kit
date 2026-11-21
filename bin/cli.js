@@ -235,11 +235,11 @@ function handleInspect(argv) {
           .filter((r) => (
             (r.id && r.id.toLowerCase().includes(q)) ||
             (r.iso && r.iso.toLowerCase().includes(q)) ||
-            (r.name && (r.name.toLowerCase().includes(q) || GEO.norm(r.name).includes(qNorm))) ||
+            (r.name && (r.name.toLowerCase().includes(q) || (qNorm && GEO.norm(r.name).includes(qNorm)))) ||
             (r.zh && r.zh.includes(query)) ||
             (r.local && r.local.toLowerCase().includes(q)) ||
             (r.adm0 && r.adm0.toLowerCase().includes(q)) ||
-            (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+            (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || (qNorm && GEO.norm(n).includes(qNorm))))
           ))
           .map((r) => ({
             id: r.id,
@@ -290,14 +290,14 @@ function handleInspect(argv) {
         matches = ds.places.filter((p) => p.adm0 === country.id);
       } else {
         matches = ds.places.filter((p) => (
-          (p.name && (p.name.toLowerCase().includes(q) || GEO.norm(p.name).includes(qNorm))) ||
+          (p.name && (p.name.toLowerCase().includes(q) || (qNorm && GEO.norm(p.name).includes(qNorm)))) ||
           (p.ascii && p.ascii.toLowerCase().includes(q)) ||
           (p.zh && p.zh.includes(query)) ||
           (p.ja && p.ja.includes(query)) ||
           (p.ko && p.ko.includes(query)) ||
           (p.adm0 && p.adm0.toLowerCase().includes(q)) ||
           (p.adm1 && p.adm1.toLowerCase().includes(q)) ||
-          (Array.isArray(p.names) && p.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+          (Array.isArray(p.names) && p.names.some((n) => n.toLowerCase().includes(q) || (qNorm && GEO.norm(n).includes(qNorm))))
         ));
       }
     }
@@ -338,9 +338,9 @@ function handleInspect(argv) {
       .filter((r) => {
         if (!q) return true;
         return (
-          (r.name && (r.name.toLowerCase().includes(q) || GEO.norm(r.name).includes(qNorm))) ||
+          (r.name && (r.name.toLowerCase().includes(q) || (qNorm && GEO.norm(r.name).includes(qNorm)))) ||
           (r.zh && r.zh.includes(query)) ||
-          (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || GEO.norm(n).includes(qNorm)))
+          (Array.isArray(r.names) && r.names.some((n) => n.toLowerCase().includes(q) || (qNorm && GEO.norm(n).includes(qNorm))))
         );
       })
       .sort((a, b) => ((a.rank ?? 99) - (b.rank ?? 99)) || String(a.name || '').localeCompare(String(b.name || '')))

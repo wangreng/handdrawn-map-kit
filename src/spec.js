@@ -258,6 +258,34 @@ function validateSpec(inputSpec, opts = {}) {
   if (spec.style.palette !== undefined && !isPlainObject(spec.style.palette)) {
     errors.push('style.palette must be an object mapping color names to hex strings.');
   }
+  if (isPlainObject(spec.style.font) && typeof spec.style.font.path === 'string') {
+    const fp = path.resolve(resolveGeoSource(spec.style.font.path, baseDir));
+    if (!fs.existsSync(fp)) {
+      errors.push(`style.font file not found: "${spec.style.font.path}".`);
+    }
+  }
+  if (Array.isArray(spec.style.fonts)) {
+    spec.style.fonts.forEach((f, idx) => {
+      if (isPlainObject(f) && typeof f.path === 'string') {
+        const fp = path.resolve(resolveGeoSource(f.path, baseDir));
+        if (!fs.existsSync(fp)) {
+          errors.push(`style.fonts[${idx}] file not found: "${f.path}".`);
+        }
+      }
+    });
+  } else if (isPlainObject(spec.style.fonts)) {
+    for (const [name, val] of Object.entries(spec.style.fonts)) {
+      const rawPath = typeof val === 'string'
+        ? val
+        : (isPlainObject(val) && typeof val.path === 'string' ? val.path : null);
+      if (rawPath) {
+        const fp = path.resolve(resolveGeoSource(rawPath, baseDir));
+        if (!fs.existsSync(fp)) {
+          errors.push(`style.fonts.${name} file not found: "${rawPath}".`);
+        }
+      }
+    }
+  }
 
   // geo
   if (spec.geo !== undefined) {
@@ -273,8 +301,8 @@ function validateSpec(inputSpec, opts = {}) {
           if (t === undefined || t === null) {
             errors.push('geo.fit.target is required.');
           } else if (Array.isArray(t)) {
-            if (t.length !== 4 || !t.every(isFiniteNum) || t[0] >= t[2] || t[1] >= t[3]) {
-              errors.push('geo.fit.target bbox must be [west, south, east, north] with west < east and south < north.');
+            if (t.length !== 4 || !t.every(isFiniteNum) || t[0] === t[2] || t[1] >= t[3]) {
+              errors.push('geo.fit.target bbox must be [west, south, east, north] with west !== east and south < north.');
             }
           } else if (typeof t === 'string' || isPlainObject(t)) {
             try {
@@ -319,9 +347,41 @@ function validateSpec(inputSpec, opts = {}) {
       if (spec.geo.admin1 !== undefined && typeof spec.geo.admin1 !== 'boolean') {
         if (!isPlainObject(spec.geo.admin1)) {
           errors.push('geo.admin1 must be a boolean or configuration object.');
-        } else if (spec.geo.admin1.country && typeof spec.geo.admin1.country === 'string') {
-          if (!GEO.findCountry(spec.geo.admin1.country, geoSource)) {
-            errors.push(`Unknown country "${spec.geo.admin1.country}" in geo.admin1.country.`);
+        } else {
+          const a1 = spec.geo.admin1;
+          const a1Source = resolveGeoSource(a1.source, baseDir);
+          let a1Country = a1.country;
+          let a1CountryValid = true;
+          if (a1Country !== undefined && typeof a1Country === 'string') {
+            const foundCountry = GEO.findCountry(a1Country, geoSource);
+            if (!foundCountry) {
+              errors.push(`Unknown country "${a1Country}" in geo.admin1.country.`);
+              a1CountryValid = false;
+            } else {
+              a1Country = foundCountry.id;
+            }
+          } else if (a1Country === undefined) {
+            const t = spec.geo.fit?.target;
+            if (isPlainObject(t) && typeof t.country === 'string') {
+              a1Country = GEO.findCountry(t.country, geoSource)?.id ?? t.country;
+            } else if (typeof t === 'string') {
+              const foundCountry = GEO.findCountry(t, geoSource);
+              if (foundCountry) a1Country = foundCountry.id;
+            }
+          }
+          if (a1CountryValid) {
+            for (const field of ['focus', 'highlight', 'neighbors']) {
+              const rawVal = a1[field];
+              if (rawVal === undefined || typeof rawVal === 'boolean') continue;
+              const list = Array.isArray(rawVal) ? rawVal : [rawVal];
+              for (const id of list) {
+                if (typeof id !== 'string') {
+                  errors.push(`geo.admin1.${field} entries must be admin-1 code/name strings.`);
+                } else if (!GEO.findAdmin1(id, { country: a1Country, source: a1Source })) {
+                  errors.push(`Unknown admin-1 region "${id}" in geo.admin1.${field}.`);
+                }
+              }
+            }
           }
         }
       }
@@ -358,7 +418,12 @@ function validateSpec(inputSpec, opts = {}) {
           return;
         }
         if (el.type === 'svg') {
-          if (!el.svg) errors.push(`elements[${idx}] with type "svg" requires an "svg" field.`);
+          const validSvg = typeof el.svg === 'string'
+            ? el.svg.length > 0
+            : (isPlainObject(el.svg) || Array.isArray(el.svg));
+          if (!validSvg) {
+            errors.push(`elements[${idx}] with type "svg" requires an "svg" string, object, or path array.`);
+          }
         } else if (el.type === 'person') {
           if (el.options && typeof el.options.pose === 'string' && !Object.hasOwn(POSES, el.options.pose)) {
             warnings.push(`elements[${idx}] references unknown person pose "${el.options.pose}"; falling back to "stand".`);
@@ -522,7 +587,7 @@ function getGeoContext(spec) {
   return ctx;
 }
 
-function resolvePoint(item, proj, idPositions, geoContext) {
+function resolvePoint(item, proj, idPositions, geoContext, warnings) {
   if (typeof item === 'string') {
     return idPositions && idPositions.get(item) ? idPositions.get(item) : null;
   }
@@ -538,13 +603,21 @@ function resolvePoint(item, proj, idPositions, geoContext) {
     return [px + dx, py + dy];
   }
   if (typeof item.place === 'string' && item.place.length > 0 && proj) {
-    const place = GEO.findPlace(item.place, {
-      country: item.country || (geoContext && geoContext.country),
-      admin1: item.admin1 || (geoContext && geoContext.admin1),
-    });
+    const country = item.country || (geoContext && geoContext.country);
+    const admin1 = item.admin1 || (geoContext && geoContext.admin1);
+    let place = GEO.findPlace(item.place, { country, admin1 });
+    if (!place && !item.admin1 && country) {
+      place = GEO.findPlace(item.place, { country });
+    }
+    if (!place && !item.country && !item.admin1) {
+      place = GEO.findPlace(item.place);
+    }
     if (place) {
       const [px, py] = proj(place.lon, place.lat);
       return [px + dx, py + dy];
+    }
+    if (Array.isArray(warnings)) {
+      warnings.push(`Unknown place "${item.place}" could not be resolved and was skipped.`);
     }
   }
   if (isFiniteNum(item.x) && isFiniteNum(item.y)) {
@@ -868,7 +941,11 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
   const autoPlace = Boolean(opts.autoLayout || spec.layout.autoPlace);
   const avoidOverlap = Boolean(opts.autoLayout || spec.layout.avoidOverlap);
   const pad = spec.layout.padding ?? 1.0;
-  const defaultFace = typeof spec.style.font === 'string' ? spec.style.font : undefined;
+  const defaultFace = typeof spec.style.font === 'string'
+    ? spec.style.font
+    : (isPlainObject(spec.style.font) && typeof spec.style.font.path === 'string'
+      ? (spec.style.font.name || 'custom')
+      : undefined);
   const geoContext = getGeoContext(spec);
 
   const layout = createLayout({
@@ -938,7 +1015,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
 
   // 3. Explicit compass (non-auto)
   if (spec.compass && spec.compass.placement !== 'auto') {
-    const pt = resolvePoint(spec.compass, proj, idPositions, geoContext);
+    const pt = resolvePoint(spec.compass, proj, idPositions, geoContext, warnings);
     if (pt) {
       const r = spec.compass.r ?? 9;
       const id = spec.compass.id || 'compass';
@@ -986,7 +1063,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
 
   if (Array.isArray(spec.layers.riceFields)) {
     spec.layers.riceFields.forEach((rf, idx) => {
-      const pt = resolvePoint(rf, proj, idPositions, geoContext);
+      const pt = resolvePoint(rf, proj, idPositions, geoContext, warnings);
       if (!pt) return;
       const rw = rf.w ?? 14;
       const rh = rf.h ?? 6;
@@ -1009,7 +1086,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
 
   if (Array.isArray(spec.layers.waves)) {
     spec.layers.waves.forEach((wv, idx) => {
-      const pt = resolvePoint(wv, proj, idPositions, geoContext);
+      const pt = resolvePoint(wv, proj, idPositions, geoContext, warnings);
       if (!pt) return;
       const s = wv.scale ?? wv.s ?? 1;
       const count = wv.count ?? 2;
@@ -1034,7 +1111,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
   let cityList = [];
   if (Array.isArray(spec.layers.cities)) {
     spec.layers.cities.forEach((city, idx) => {
-      const pt = resolvePoint(city, proj, idPositions, geoContext);
+      const pt = resolvePoint(city, proj, idPositions, geoContext, warnings);
       if (!pt) return;
       cityList.push({ ...city, id: city.id || `city-${idx + 1}`, pt });
     });
@@ -1108,7 +1185,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       autoElements.push({ el, idx, id });
       return;
     }
-    const pt = resolvePoint(el, proj, idPositions, geoContext);
+    const pt = resolvePoint(el, proj, idPositions, geoContext, warnings);
     if (!pt) return;
     idPositions.set(id, pt);
 
@@ -1119,9 +1196,10 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       bb = SVG.measureSvg(normalizeSvgInput(el.svg), pt[0], pt[1], svgOpts);
     } else {
       const elOpts = isPlainObject(el.options) ? el.options : {};
+      const elAngle = EL.ELEMENT_META[el.type]?.rotatable ? (el.angle ?? elOpts.angle ?? 0) : 0;
       bb = estimateElementBox(el.type, pt[0], pt[1], el.scale, {
         ...elOpts,
-        angle: el.angle ?? elOpts.angle ?? 0,
+        angle: elAngle,
       });
     }
 
@@ -1181,7 +1259,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
     }
 
     if (Array.isArray(lbl.path) && lbl.path.length >= 2) {
-      const pts = resolvePathPoints(lbl.path, proj, false);
+      const pts = resolvePathPoints({ pts: lbl.path, coords: lbl.coords }, proj, false);
       if (pts.length < 2) return;
       const size = lOpts.size ?? defs.size;
       const bb = bboxFromPoints(pts, size * 0.6) || normalizeBBox(pts[0][0], pts[0][1], 0, 0);
@@ -1199,7 +1277,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       return;
     }
 
-    const pt = resolvePoint(lbl, proj, idPositions, geoContext);
+    const pt = resolvePoint(lbl, proj, idPositions, geoContext, warnings);
     if (!pt) return;
     idPositions.set(id, pt);
     const tb = estimateTextBBox(lbl.text, pt[0], pt[1], { ...defs, ...lOpts });
@@ -1282,7 +1360,8 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       probeBb = SVG.measureSvg(normalizeSvgInput(el.svg), 0, 0, svgOpts);
     } else {
       const elOpts = isPlainObject(el.options) ? el.options : {};
-      probeBb = estimateElementBox(el.type, 0, 0, el.scale, { ...elOpts, angle: el.angle ?? elOpts.angle ?? 0 });
+      const elAngle = EL.ELEMENT_META[el.type]?.rotatable ? (el.angle ?? elOpts.angle ?? 0) : 0;
+      probeBb = estimateElementBox(el.type, 0, 0, el.scale, { ...elOpts, angle: elAngle });
     }
     const placed = layout.placeAuto({
       w: Math.max(1, probeBb.w),
@@ -1305,6 +1384,25 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       fixed: el.fixed ?? false,
       layer: 'elements',
     });
+    let labelEntry = null;
+    if (el.label) {
+      const lObj = typeof el.label === 'string' ? { text: el.label } : el.label;
+      const lx = lObj.x ?? (pt[0] + (lObj.dx ?? 0));
+      const ly = lObj.y ?? (item.y1 + (lObj.dy ?? 3.2));
+      const defs = labelDefaultsForKind('label', pal, defaultFace);
+      const lOpts = buildLabelDrawOpts(lObj, defs, pal);
+      const tb = estimateTextBBox(lObj.text, lx, ly, { ...defs, ...lOpts });
+      const labelItem = layout.register({
+        id: `${id}:label`,
+        kind: 'label',
+        ...tb,
+        priority: lObj.priority ?? 52,
+        fixed: lObj.fixed !== undefined ? Boolean(lObj.fixed) : !avoidOverlap,
+        layer: 'labels',
+        meta: { ownerId: id },
+      });
+      labelEntry = { lObj, lx, ly, lOpts, origBox: { x: labelItem.x, y: labelItem.y }, item: labelItem };
+    }
     plan.elements.push({
       el,
       idx,
@@ -1314,7 +1412,7 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
       origBox: { x: item.x, y: item.y },
       svgOpts,
       item,
-      labelEntry: null,
+      labelEntry,
     });
   }
 
@@ -1349,6 +1447,25 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
     layout.avoidOverlaps({ pad, respectFixed: true });
 
     // Propagate deltas back to draw coordinates
+    for (const iEntry of plan.insets) {
+      if (iEntry.item) {
+        iEntry.ins.x = iEntry.item.x;
+        iEntry.ins.y = iEntry.item.y;
+      }
+    }
+
+    if (plan.cartouche && plan.cartouche.item) {
+      plan.cartouche.x = plan.cartouche.item.x;
+      plan.cartouche.y = plan.cartouche.item.y;
+    }
+
+    if (plan.compass && plan.compass.item) {
+      plan.compass.pt = [
+        plan.compass.item.x + plan.compass.item.w / 2,
+        plan.compass.item.y + plan.compass.item.h / 2,
+      ];
+    }
+
     for (const cEntry of plan.cities) {
       if (cEntry.labelItem && cEntry.origLabelBox) {
         const ddx = cEntry.labelItem.x - cEntry.origLabelBox.x;

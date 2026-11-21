@@ -164,3 +164,243 @@ test('CLI inspect admin1, places, rivers, and fonts return valid JSON', () => {
   const fnList = JSON.parse(fn.stdout);
   assert.ok(fnList.length >= 1);
 });
+
+// ── Tier 5 Adversarial Hardening Regression Tests (Fixes 1–11) ───────────────
+
+test('Fix 1: avoidOverlaps does not teleport items that share duplicate IDs', () => {
+  const layout = createLayout({ w: 200, h: 140, inner: 8, gridStep: 2, padding: 1 });
+  const a = layout.register({ id: 'dup', kind: 'label', x: 30, y: 30, w: 20, h: 8, priority: 60, fixed: false });
+  const b = layout.register({ id: 'dup', kind: 'label', x: 150, y: 100, w: 20, h: 8, priority: 50, fixed: false });
+  layout.register({ id: 'blocker', kind: 'element', x: 30, y: 30, w: 20, h: 8, priority: 100, fixed: true });
+
+  const res = layout.avoidOverlaps({ pad: 1, respectFixed: true });
+  assert.equal(res.unresolved.length, 0);
+  // Item a should stay near its original (30, 30), NOT teleport to (150, 100)
+  assert.ok(Math.hypot(a.x - 30, a.y - 30) < 25, `Item a teleported too far: (${a.x}, ${a.y})`);
+  // Item b was never blocked and should remain at (150, 100)
+  assert.equal(b.x, 150);
+  assert.equal(b.y, 100);
+});
+
+test('Fix 2: placeAuto and avoidOverlaps clamp rounded coordinates strictly inside safeFrame', () => {
+  const layout = createLayout({ w: 100, h: 80, inner: 8, gridStep: 2, padding: 1 });
+  // Fractional dimensions that previously rounded above safeFrame[2] - w (92 - 20.116 = 71.884 -> 71.88 or 71.89)
+  const placed = layout.placeAuto({
+    w: 20.116,
+    h: 10.116,
+    terrain: 'any',
+    preferredCorners: ['bottom-right'],
+    margin: 0,
+  });
+  assert.equal(placed.placed, true);
+  assert.ok(placed.x >= 8 && placed.x + 20.116 <= 92 + 1e-9, `x=${placed.x} overflowed safeFrame`);
+  assert.ok(placed.y >= 8 && placed.y + 10.116 <= 72 + 1e-9, `y=${placed.y} overflowed safeFrame`);
+
+  // Also test avoidOverlaps clamping at right/bottom edge with 3-decimal fractional width
+  const layout2 = createLayout({ w: 100, h: 80, inner: 8, gridStep: 2, padding: 0 });
+  const item = layout2.register({ id: 'edge', kind: 'label', x: 95, y: 75, w: 20.0006, h: 10.0006, priority: 50, fixed: false });
+  layout2.avoidOverlaps({ pad: 0, respectFixed: true });
+  assert.ok(item.x >= 8 && item.x + item.w <= 92 + 1e-9, `item.x=${item.x}, x1=${item.x1}`);
+  assert.ok(item.y >= 8 && item.y + item.h <= 72 + 1e-9, `item.y=${item.y}, y1=${item.y1}`);
+  assert.equal(layout2.findOutOfBounds().length, 0);
+});
+
+test('Fix 3: avoidOverlap propagates nudged coordinates back to insets, cartouche, and compass', async (t) => {
+  const { loadImage, createCanvas } = require('@napi-rs/canvas');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'handdrawn-map-fix3-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const res = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 200, h: 140, ppm: 3, ocean: false },
+    elements: [{ id: 'blocker', type: 'pavilion', x: 50, y: 50, scale: 1.2, fixed: true, priority: 100 }],
+    insets: [{ id: 'ins1', x: 40, y: 40, w: 30, h: 20, title: 'Inset', fixed: false, priority: 40 }],
+    cartouche: { id: 'cart1', x: 40, y: 40, w: 40, h: 22, title: 'Title', fixed: false, priority: 35 },
+    compass: { id: 'cmp1', x: 50, y: 50, r: 6, fixed: false, priority: 30 },
+    layout: { avoidOverlap: true },
+  });
+
+  assert.equal(res.diagnostics.summary.overlapCount, 0);
+  const outPng = path.join(dir, 'fix3.png');
+  await res.save(outPng);
+  const img = await loadImage(outPng);
+  const c = createCanvas(img.width, img.height);
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const { data } = ctx.getImageData(0, 0, img.width, img.height);
+
+  for (const id of ['ins1', 'cart1', 'cmp1']) {
+    const it = res.diagnostics.items.find((x) => x.id === id);
+    assert.ok(it, `Missing diagnostics item ${id}`);
+    const x0 = Math.max(0, Math.floor(it.x0 * 3));
+    const y0 = Math.max(0, Math.floor(it.y0 * 3));
+    const x1 = Math.min(img.width - 1, Math.ceil(it.x1 * 3));
+    const y1 = Math.min(img.height - 1, Math.ceil(it.y1 * 3));
+    let dark = 0;
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const off = (py * img.width + px) * 4;
+        const lum = 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2];
+        if (lum < 160) dark++;
+      }
+    }
+    assert.ok(dark > 20, `Expected rendered ink inside nudged ${id} bbox, got ${dark} dark px`);
+  }
+});
+
+test('Fix 4: placement: "auto" elements preserve and register el.label', () => {
+  const res = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 180, h: 120, ppm: 2 },
+    elements: [{ id: 'auto-panda', type: 'panda', placement: 'auto', label: 'Giant Panda' }],
+    layout: { autoPlace: true, avoidOverlap: true },
+  });
+  assert.ok(res.diagnostics.items.some((it) => it.id === 'auto-panda'));
+  assert.ok(res.diagnostics.items.some((it) => it.id === 'auto-panda:label'));
+  assert.equal(res.diagnostics.summary.overlapCount, 0);
+});
+
+test('Fix 5: CLI inspect admin1|places|rivers returns [] on punctuation/whitespace-only queries', () => {
+  for (const kind of ['admin1', 'places', 'rivers']) {
+    for (const q of ['!!!', '???', '   ']) {
+      const r = runCli(['inspect', kind, q, '--json']);
+      assert.equal(r.status, 0, r.stderr);
+      const parsed = JSON.parse(r.stdout);
+      assert.deepEqual(parsed, [], `Expected [] for inspect ${kind} ${JSON.stringify(q)}, got ${parsed.length} items`);
+    }
+  }
+});
+
+test('Fix 6: resolvePoint falls back for neighboring cities on admin-1 maps and warns on unknown places', () => {
+  const res = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 200, h: 140, ppm: 2 },
+    geo: {
+      fit: { target: { country: 'China', admin1: 'Sichuan' } },
+      admin1: { country: 'China', focus: ['Sichuan'] },
+    },
+    layers: {
+      cities: [
+        { id: 'cd', place: '成都', name: '成都' },
+        { id: 'cq', place: '重庆', name: '重庆' },
+        { id: 'bad-city', place: 'AtlantisCityXYZ', name: 'Atlantis' },
+      ],
+    },
+    elements: [{ id: 'el-cq', type: 'lantern', place: 'Chongqing' }],
+    labels: [{ id: 'lbl-cq', text: '重庆', place: '重庆' }],
+  });
+
+  const ids = res.diagnostics.items.map((i) => i.id);
+  assert.ok(ids.includes('cd'));
+  assert.ok(ids.includes('cq'), 'Expected Chongqing city to resolve via country fallback');
+  assert.ok(ids.includes('el-cq'), 'Expected Chongqing element to resolve via country fallback');
+  assert.ok(ids.includes('lbl-cq'), 'Expected Chongqing label to resolve via country fallback');
+  assert.ok(
+    res.diagnostics.warnings.some((w) => w.includes('AtlantisCityXYZ')),
+    `Expected warning for unknown place, got: ${JSON.stringify(res.diagnostics.warnings)}`,
+  );
+});
+
+test('Fix 7: labels[].path respects coords: "geo"', () => {
+  const res = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 200, h: 140, ppm: 2 },
+    geo: { fit: { target: 'Japan' }, focus: 'Japan' },
+    labels: [
+      { id: 'curved-geo', kind: 'sea', text: '日本海', coords: 'geo', path: [[132, 37], [135, 39], [138, 41]], size: 3.5 },
+    ],
+  });
+  const [expX, expY] = res.proj(135, 39);
+  const item = res.diagnostics.items.find((i) => i.id === 'curved-geo');
+  assert.ok(item);
+  const cx = (item.x0 + item.x1) / 2;
+  const cy = (item.y0 + item.y1) / 2;
+  assert.ok(Math.abs(cx - expX) < 12, `Expected projected cx near ${expX.toFixed(1)}, got ${cx.toFixed(1)}`);
+  assert.ok(Math.abs(cy - expY) < 12, `Expected projected cy near ${expY.toFixed(1)}, got ${cy.toFixed(1)}`);
+});
+
+test('Fix 8 & 11: validateSpec checks geo.admin1 regions, font paths, wrapped antimeridian bbox, and svg type', () => {
+  const { validateSpec } = require('../src');
+
+  // Fix 8a: invalid admin1 focus/highlight/neighbors
+  const badA1 = validateSpec({
+    schemaVersion: 1,
+    geo: {
+      fit: { target: 'China' },
+      admin1: { country: 'China', focus: ['NarniaProvince'], neighbors: ['MiddleEarth'] },
+    },
+  });
+  assert.equal(badA1.ok, false);
+  assert.ok(badA1.errors.some((e) => e.includes('NarniaProvince')));
+  assert.ok(badA1.errors.some((e) => e.includes('MiddleEarth')));
+
+  // Fix 8b: missing style.font and style.fonts paths
+  const badFontObj = validateSpec({
+    schemaVersion: 1,
+    style: {
+      font: { name: 'Missing', path: '/tmp/does-not-exist-handdrawn-font.ttf' },
+      fonts: [{ name: 'Missing2', path: '/tmp/does-not-exist-2.ttf' }],
+    },
+  });
+  assert.equal(badFontObj.ok, false);
+  assert.ok(badFontObj.errors.some((e) => e.includes('style.font')));
+  assert.ok(badFontObj.errors.some((e) => e.includes('style.fonts[0]')));
+
+  // Fix 11a: antimeridian wrapped bbox allowed; degenerate bbox still rejected
+  const antimeridianOk = validateSpec({
+    schemaVersion: 1,
+    geo: { fit: { target: [170, -25, -170, -10] } },
+  });
+  assert.equal(antimeridianOk.ok, true, antimeridianOk.errors.join('; '));
+
+  const degenerateBbox = validateSpec({
+    schemaVersion: 1,
+    geo: { fit: { target: [10, 20, 10, 30] } },
+  });
+  assert.equal(degenerateBbox.ok, false);
+
+  // Fix 11b: elements[].svg rejects numbers/booleans
+  const badSvgNum = validateSpec({
+    schemaVersion: 1,
+    elements: [{ type: 'svg', x: 50, y: 50, svg: 123 }],
+  });
+  assert.equal(badSvgNum.ok, false);
+
+  const badSvgBool = validateSpec({
+    schemaVersion: 1,
+    elements: [{ type: 'svg', x: 50, y: 50, svg: true }],
+  });
+  assert.equal(badSvgBool.ok, false);
+});
+
+test('Fix 9: object-form style.font { name, path } sets defaultFace', () => {
+  const sansPath = path.resolve(__dirname, '..', 'engine', 'fonts', 'KevinSans-Regular.ttf');
+  const rSans = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 120, h: 80, ppm: 2 },
+    style: { font: 'sans' },
+    labels: [{ id: 'l1', text: 'HELLO WORLD', x: 60, y: 40, size: 6 }],
+  });
+  const rObj = renderSpec({
+    schemaVersion: 1,
+    canvas: { w: 120, h: 80, ppm: 2 },
+    style: { font: { name: 'MyCustomSans', path: sansPath } },
+    labels: [{ id: 'l1', text: 'HELLO WORLD', x: 60, y: 40, size: 6 }],
+  });
+  const wSans = rSans.diagnostics.items.find((i) => i.id === 'l1').w;
+  const wObj = rObj.diagnostics.items.find((i) => i.id === 'l1').w;
+  assert.ok(Math.abs(wObj - wSans) < 0.05, `Expected custom sans width ${wObj} ≈ ${wSans}`);
+});
+
+test('Fix 10: non-rotatable built-in elements ignore angle during planSpec', () => {
+  const spec = {
+    schemaVersion: 1,
+    canvas: { w: 200, h: 140, ppm: 2 },
+    elements: [{ id: 'rot-panda', type: 'panda', x: 100, y: 70, scale: 1, angle: Math.PI / 2 }],
+  };
+  const planned = planSpec(spec).diagnostics.items.find((i) => i.id === 'rot-panda');
+  const rendered = renderSpec(spec).diagnostics.items.find((i) => i.id === 'rot-panda');
+  assert.ok(Math.abs(planned.w - rendered.w) < 0.05, `plan w=${planned.w} !== render w=${rendered.w}`);
+  assert.ok(Math.abs(planned.h - rendered.h) < 0.05, `plan h=${planned.h} !== render h=${rendered.h}`);
+});
+
