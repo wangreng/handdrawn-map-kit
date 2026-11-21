@@ -162,7 +162,7 @@ function createMap(opts = {}) {
         });
       const out = [];
       for (const lake of lakes) {
-        const rings = M.geoRings(P, proj, lake.polygons, { minArea: o.minArea ?? 0.3, ...o });
+        const rings = M.geoRings(P, proj, lake.polygons, { ...o, minArea: o.minArea ?? 0.3 });
         if (!rings.length) continue;
         M.part(P, rings, o.color || M.PALETTE.lake, {
           pressure: o.pressure ?? 0.62,
@@ -241,7 +241,7 @@ function createMap(opts = {}) {
           source: o.source,
         });
         for (const landform of landforms) {
-          const rings = M.geoRings(P, proj, landform.polygons, { minArea: o.minArea ?? 8, ...o });
+          const rings = M.geoRings(P, proj, landform.polygons, { ...o, minArea: o.minArea ?? 8 });
           if (!rings.length) continue;
           let rx0 = Infinity, ry0 = Infinity, rx1 = -Infinity, ry1 = -Infinity;
           for (const [px, py] of rings[0]) {

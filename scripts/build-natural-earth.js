@@ -534,8 +534,10 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg.startsWith('--only=')) {
       only = arg.slice('--only='.length).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!only.length) throw new Error(`Invalid --only argument "${arg}": expected one or more layer names (${VALID_LAYERS.join(', ')})`);
     } else if (arg === '--only') {
       only = String(argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!only.length) throw new Error(`Invalid --only argument: expected one or more layer names (${VALID_LAYERS.join(', ')})`);
     } else if (arg.startsWith('--tol=')) {
       tol = Number(arg.slice('--tol='.length));
     } else if (arg === '--tol') {

@@ -319,3 +319,74 @@ test('src/index.js exports all original and M2 APIs', () => {
     assert.ok(name in API, `missing export ${name}`);
   }
 });
+
+test('regression: findRiver/getRiver/findLake/getLake accept indexed and raw dataset objects', () => {
+  const riversDs = GEO.loadRivers();
+  assert.equal(GEO.findRiver('Nile', riversDs)?.name, 'Nile');
+  assert.equal(GEO.getRiver('Nile', riversDs).name, 'Nile');
+
+  const lakesDs = GEO.loadLakes();
+  assert.equal(GEO.findLake('Superior', lakesDs)?.name, 'Lake Superior');
+  assert.equal(GEO.getLake('Superior', lakesDs).name, 'Lake Superior');
+
+  const rawRivers = { source: 'syn-rivers', rivers: [{ name: 'Mock River', lines: [[[0, 0], [1, 1]]] }] };
+  assert.equal(GEO.findRiver('Mock River', rawRivers)?.name, 'Mock River');
+  assert.equal(GEO.getRiver('Mock River', { source: rawRivers }).name, 'Mock River');
+
+  const rawLakes = { source: 'syn-lakes', lakes: [{ name: 'Mock Lake', polygons: [[[[0, 0], [1, 0], [1, 1]]]] }] };
+  assert.equal(GEO.findLake('Mock Lake', rawLakes)?.name, 'Mock Lake');
+  assert.equal(GEO.getLake('Mock Lake', { source: rawLakes }).name, 'Mock Lake');
+});
+
+test('regression: norm rejects NaN, Infinity, and booleans (no false TH-55 Nan match)', () => {
+  assert.equal(GEO.norm(NaN), '');
+  assert.equal(GEO.norm(Infinity), '');
+  assert.equal(GEO.norm(-Infinity), '');
+  assert.equal(GEO.norm(true), '');
+  assert.equal(GEO.norm(false), '');
+
+  assert.equal(GEO.findAdmin1(NaN), null);
+  assert.equal(GEO.findAdmin1(Infinity), null);
+  assert.equal(GEO.findAdmin1(true), null);
+  assert.equal(GEO.findAdmin1(false), null);
+  assert.throws(() => GEO.getAdmin1(NaN), /Unknown admin-1 region/);
+});
+
+test('regression: inverted latitude bbox and malformed bbox return [] or throw in resolveRegion', () => {
+  assert.deepEqual(GEO.countriesInBBox([60, 60, 120, 50]), []);
+  assert.deepEqual(GEO.lakesInBBox([103, 54, 110, 53]), []);
+  assert.deepEqual(GEO.landformsInBBox([60, 60, 120, 50]), []);
+  assert.deepEqual(GEO.admin1InBBox([97, 35, 109, 26]), []);
+  assert.deepEqual(GEO.riversInBBox([95, 42, 122, 25]), []);
+  assert.deepEqual(GEO.placesInBBox([100, 45, 145, 20]), []);
+  assert.deepEqual(GEO.peaksInBBox([75, 35, 95, 25]), []);
+
+  assert.deepEqual(GEO.admin1InBBox(null), []);
+  assert.deepEqual(GEO.countriesInBBox({}), []);
+  assert.deepEqual(GEO.placesInBBox([0, NaN, 10, 10]), []);
+  assert.deepEqual(GEO.riversInBBox([1, 2, 3]), []);
+
+  assert.throws(() => GEO.resolveRegion([10, 50, 20, 10]), /south.*<=.*north|Invalid bbox/i);
+  assert.throws(() => GEO.resolveRegion({ bbox: [10, 50, 20, 10] }), /south.*<=.*north|Invalid bbox/i);
+});
+
+test('regression: null opts treated as {} across src/geo.js functions', () => {
+  assert.equal(GEO.findAdmin1('Sichuan', null)?.id, 'CN-SC');
+  assert.equal(GEO.getAdmin1('Sichuan', null).id, 'CN-SC');
+  assert.ok(GEO.admin1InBBox([97, 26, 109, 35], null).length > 0);
+  assert.ok(GEO.riversInBBox([95, 25, 122, 42], null).length > 0);
+  assert.ok(GEO.lakesInBBox([95, 25, 122, 42], null).length > 0);
+  assert.ok(GEO.placesInBBox([100, 20, 145, 45], null).length > 0);
+  assert.equal(GEO.findPlace('Chengdu', null)?.name, 'Chengdu');
+  assert.equal(GEO.getPlace('Chengdu', null).name, 'Chengdu');
+  assert.ok(GEO.peaksInBBox([75, 25, 95, 35], null).length > 0);
+  assert.ok(GEO.landformsInBBox([4, 43, 17, 48], null).length > 0);
+  assert.equal(GEO.resolveRegion('China', null).feature.id, 'CHN');
+});
+
+test('regression: scripts/build-natural-earth.js parseArgs rejects empty --only', () => {
+  assert.throws(() => builder.parseArgs(['--only=']), /Invalid --only/);
+  assert.throws(() => builder.parseArgs(['--only=,']), /Invalid --only/);
+  assert.throws(() => builder.parseArgs(['--only']), /Invalid --only/);
+});
+

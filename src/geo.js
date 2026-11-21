@@ -33,7 +33,7 @@ const caches = {
 // NFKC folds fullwidth punctuation/alphanumerics, NFD + [\u0300-\u036f] strips Latin combining
 // diacritics without removing Japanese dakuten/handakuten, and NFC recomposes Korean Hangul.
 const norm = (s) => {
-  if (s == null || typeof s === 'object') return '';
+  if (typeof s !== 'string' && !(typeof s === 'number' && Number.isFinite(s))) return '';
   return String(s)
     .normalize('NFKC')
     .normalize('NFD')
@@ -62,8 +62,21 @@ function readJsonFile(filePath) {
   return JSON.parse(text);
 }
 
+const isDatasetObject = (v) => (
+  Boolean(v._kind)
+  || v.type === 'FeatureCollection'
+  || Array.isArray(v.rivers)
+  || Array.isArray(v.lakes)
+  || Array.isArray(v.countries)
+  || Array.isArray(v.regions)
+  || Array.isArray(v.places)
+  || Array.isArray(v.peaks)
+);
+
 const extractSource = (v) => (
-  v && typeof v === 'object' && !Array.isArray(v) && Object.prototype.hasOwnProperty.call(v, 'source')
+  v && typeof v === 'object' && !Array.isArray(v)
+  && !isDatasetObject(v)
+  && Object.prototype.hasOwnProperty.call(v, 'source')
     ? v.source
     : v
 );
@@ -161,7 +174,17 @@ function mainBBoxOf(polygons) {
 const bboxIntersects = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 
 function shiftedBBoxes(bbox) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return [];
   const [w, s, e, n] = bbox;
+  if (
+    typeof w !== 'number' || !Number.isFinite(w)
+    || typeof s !== 'number' || !Number.isFinite(s)
+    || typeof e !== 'number' || !Number.isFinite(e)
+    || typeof n !== 'number' || !Number.isFinite(n)
+    || s > n
+  ) {
+    return [];
+  }
   // Support both extended [170, -25, 190, -10] and wrapped [170, -25, -170, -10] antimeridian boxes
   const eNorm = w > e ? e + 360 : e;
   return [-360, 0, 360].map((d) => [w + d, s, eNorm + d, n]);
@@ -248,6 +271,7 @@ function listCountries(source) {
 // The box may run past +/-180 (a frame spanning the antimeridian); countries are matched a turn either side.
 function countriesInBBox(bbox, source) {
   const boxes = shiftedBBoxes(bbox);
+  if (!boxes.length) return [];
   return loadCountries(source).countries.filter(
     (c) => bboxTouches(c.bbox, boxes) && c.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes)),
   );
@@ -374,15 +398,16 @@ function loadAdmin1(source) {
   return ds;
 }
 
-function findAdmin1(id, opts = {}) {
+function findAdmin1(id, opts) {
   if (id && typeof id === 'object' && Array.isArray(id.polygons)) return id;
-  const ds = loadAdmin1(opts.source);
+  const o = opts || {};
+  const ds = loadAdmin1(o.source);
   const q = norm(id);
   if (!q) return null;
   const stripped = stripCjkSuffix(q);
 
-  if (opts.country) {
-    const code = resolveCountryCode(opts.country, opts.countrySource);
+  if (o.country) {
+    const code = resolveCountryCode(o.country, o.countrySource);
     const cMap = ds.byCountryKey.get(code);
     if (cMap) {
       const hit = cMap.get(q) || (stripped ? cMap.get(stripped) : null);
@@ -404,14 +429,15 @@ function findAdmin1(id, opts = {}) {
   );
 }
 
-function getAdmin1(id, opts = {}) {
+function getAdmin1(id, opts) {
   if (id && typeof id === 'object' && Array.isArray(id.polygons)) return id;
-  const hit = findAdmin1(id, opts);
+  const o = opts || {};
+  const hit = findAdmin1(id, o);
   if (hit) return hit;
-  const ds = loadAdmin1(opts.source);
+  const ds = loadAdmin1(o.source);
   const q = norm(id);
   const minLen = minSuggestionLen(q);
-  const code = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const code = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
   const pool = code ? (ds.byCountry.get(code) || []) : ds.regions;
   const near = pool
     .filter((r) => q.length >= minLen && (
@@ -435,11 +461,13 @@ function listAdmin1(countryId, source) {
   }));
 }
 
-function admin1InBBox(bbox, opts = {}) {
-  const ds = loadAdmin1(opts.source);
+function admin1InBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const pool = opts.country
-    ? (ds.byCountry.get(resolveCountryCode(opts.country, opts.countrySource)) || [])
+  if (!boxes.length) return [];
+  const ds = loadAdmin1(o.source);
+  const pool = o.country
+    ? (ds.byCountry.get(resolveCountryCode(o.country, o.countrySource)) || [])
     : ds.regions;
   return pool.filter(
     (r) => bboxTouches(r.bbox, boxes) && r.polygons.some((poly) => bboxTouches(bboxOf([poly]), boxes)),
@@ -497,12 +525,14 @@ function loadRivers(source) {
   return ds;
 }
 
-function riversInBBox(bbox, opts = {}) {
-  const ds = loadRivers(opts.source);
+function riversInBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const includeLC = opts.includeLakeCenterlines === true;
-  const minRank = opts.minRank;
-  const maxRank = opts.maxRank;
+  if (!boxes.length) return [];
+  const ds = loadRivers(o.source);
+  const includeLC = o.includeLakeCenterlines === true;
+  const minRank = o.minRank;
+  const maxRank = o.maxRank;
   return ds.rivers
     .filter((r) => {
       if (!includeLC && r.kind === 'Lake Centerline') return false;
@@ -593,11 +623,13 @@ function loadLakes(source) {
   return ds;
 }
 
-function lakesInBBox(bbox, opts = {}) {
-  const ds = loadLakes(opts.source);
+function lakesInBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const maxRank = opts.maxRank;
-  const minArea = opts.minArea;
+  if (!boxes.length) return [];
+  const ds = loadLakes(o.source);
+  const maxRank = o.maxRank;
+  const minArea = o.minArea;
   return ds.lakes
     .filter((l) => {
       if (maxRank != null && l.rank > maxRank) return false;
@@ -705,8 +737,12 @@ function buildAdmin1Matcher(admin1Opt, countryCode, admin1Source) {
   try {
     const a1 = findAdmin1(admin1Opt, { country: countryCode || undefined, source: admin1Source });
     if (a1) {
-      keys.add(norm(a1.name));
-      for (const n of a1.names || []) keys.add(norm(n));
+      const an = norm(a1.name);
+      if (an) keys.add(an);
+      for (const n of a1.names || []) {
+        const nk = norm(n);
+        if (nk) keys.add(nk);
+      }
     }
   } catch {
     // Ignore if admin-1 dataset is unavailable
@@ -714,18 +750,22 @@ function buildAdmin1Matcher(admin1Opt, countryCode, admin1Source) {
   return (pAdm1) => {
     if (!pAdm1) return false;
     const pk = norm(pAdm1);
-    return keys.has(pk) || keys.has(stripCjkSuffix(pk));
+    if (!pk) return false;
+    const spk = stripCjkSuffix(pk);
+    return keys.has(pk) || (Boolean(spk) && keys.has(spk));
   };
 }
 
-function placesInBBox(bbox, opts = {}) {
-  const ds = loadPlaces(opts.source);
+function placesInBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
-  const matchAdm1 = buildAdmin1Matcher(opts.admin1, countryCode, opts.admin1Source);
-  const maxRank = opts.maxRank;
-  const minPop = opts.minPop;
-  const capitalsOnly = opts.capitalsOnly === true;
+  if (!boxes.length) return [];
+  const ds = loadPlaces(o.source);
+  const countryCode = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
+  const matchAdm1 = buildAdmin1Matcher(o.admin1, countryCode, o.admin1Source);
+  const maxRank = o.maxRank;
+  const minPop = o.minPop;
+  const capitalsOnly = o.capitalsOnly === true;
 
   const out = ds.places.filter((p) => {
     if (!pointInBBox(p.lon, p.lat, boxes)) return false;
@@ -736,38 +776,40 @@ function placesInBBox(bbox, opts = {}) {
     if (minPop != null && p.pop < minPop) return false;
     return true;
   });
-  return opts.limit != null && opts.limit >= 0 ? out.slice(0, opts.limit) : out;
+  return o.limit != null && o.limit >= 0 ? out.slice(0, o.limit) : out;
 }
 
-function findPlace(name, opts = {}) {
+function findPlace(name, opts) {
   if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
     return name;
   }
-  const ds = loadPlaces(opts.source);
+  const o = opts || {};
+  const ds = loadPlaces(o.source);
   const q = norm(name);
   if (!q) return null;
   const stripped = stripCjkSuffix(q);
   const candidates = ds.byKey.get(q) || (stripped ? ds.byKey.get(stripped) : null);
   if (!candidates || !candidates.length) return null;
 
-  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
-  const matchAdm1 = buildAdmin1Matcher(opts.admin1, countryCode, opts.admin1Source);
+  const countryCode = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
+  const matchAdm1 = buildAdmin1Matcher(o.admin1, countryCode, o.admin1Source);
   return candidates.find((p) => (
     (!countryCode || p.adm0 === countryCode)
     && (!matchAdm1 || matchAdm1(p.adm1))
   )) || null;
 }
 
-function getPlace(name, opts = {}) {
+function getPlace(name, opts) {
   if (name && typeof name === 'object' && typeof name.lon === 'number' && typeof name.lat === 'number') {
     return name;
   }
-  const hit = findPlace(name, opts);
+  const o = opts || {};
+  const hit = findPlace(name, o);
   if (hit) return hit;
-  const ds = loadPlaces(opts.source);
+  const ds = loadPlaces(o.source);
   const q = norm(name);
   const minLen = minSuggestionLen(q);
-  const countryCode = opts.country ? resolveCountryCode(opts.country, opts.countrySource) : null;
+  const countryCode = o.country ? resolveCountryCode(o.country, o.countrySource) : null;
   const near = ds.places
     .filter((p) => {
       if (countryCode && p.adm0 !== countryCode) return false;
@@ -837,11 +879,13 @@ function loadLandforms(source) {
   return ds;
 }
 
-function peaksInBBox(bbox, opts = {}) {
-  const ds = loadLandforms(opts.source);
+function peaksInBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const minElev = opts.minElev;
-  const kindOpt = Object.prototype.hasOwnProperty.call(opts, 'kind') ? opts.kind : 'mountain';
+  if (!boxes.length) return [];
+  const ds = loadLandforms(o.source);
+  const minElev = o.minElev;
+  const kindOpt = Object.prototype.hasOwnProperty.call(o, 'kind') ? o.kind : 'mountain';
   let kindSet = null;
   if (kindOpt != null && kindOpt !== 'all') {
     const arr = Array.isArray(kindOpt) ? kindOpt : [kindOpt];
@@ -855,13 +899,15 @@ function peaksInBBox(bbox, opts = {}) {
   });
 }
 
-function landformsInBBox(bbox, opts = {}) {
-  const ds = loadLandforms(opts.source);
+function landformsInBBox(bbox, opts) {
+  const o = opts || {};
   const boxes = shiftedBBoxes(bbox);
-  const maxRank = opts.maxRank;
+  if (!boxes.length) return [];
+  const ds = loadLandforms(o.source);
+  const maxRank = o.maxRank;
   let kindSet = null;
-  if (opts.kinds != null) {
-    const arr = Array.isArray(opts.kinds) ? opts.kinds : [opts.kinds];
+  if (o.kinds != null) {
+    const arr = Array.isArray(o.kinds) ? o.kinds : [o.kinds];
     kindSet = new Set(arr.map((k) => String(k).toLowerCase()));
   }
   return ds.regions.filter((r) => {
@@ -876,11 +922,15 @@ function landformsInBBox(bbox, opts = {}) {
 // =========================================================================
 const ISO_3166_2_RE = /^[A-Za-z]{2}-[A-Za-z0-9]{1,3}$/;
 
-function resolveRegion(target, opts = {}) {
+function resolveRegion(target, opts) {
+  const o = opts || {};
   // 1. Explicit [west, south, east, north] bbox array
   if (Array.isArray(target)) {
     if (target.length !== 4 || !target.every((v) => typeof v === 'number' && Number.isFinite(v))) {
       throw new Error('Invalid bbox target: expected [west, south, east, north] of 4 finite numbers');
+    }
+    if (target[1] > target[3]) {
+      throw new Error(`Invalid bbox target: south (${target[1]}) must be <= north (${target[3]})`);
     }
     return { kind: 'bbox', bbox: target, mainBBox: target, feature: null };
   }
@@ -900,18 +950,18 @@ function resolveRegion(target, opts = {}) {
     }
     if (target.admin1 != null) {
       const r = getAdmin1(target.admin1, {
-        country: target.country ?? opts.country,
-        source: opts.admin1Source,
-        countrySource: opts.countrySource ?? opts.source,
+        country: target.country ?? o.country,
+        source: o.admin1Source,
+        countrySource: o.countrySource ?? o.source,
       });
       return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
     }
     if (target.country != null) {
-      const c = getCountry(target.country, opts.countrySource ?? opts.source);
+      const c = getCountry(target.country, o.countrySource ?? o.source);
       return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
     }
     if (Array.isArray(target.bbox)) {
-      return resolveRegion(target.bbox, opts);
+      return resolveRegion(target.bbox, o);
     }
     throw new Error('Invalid region target object: expected { country, admin1 }, { country }, or { bbox }');
   }
@@ -922,27 +972,27 @@ function resolveRegion(target, opts = {}) {
     if (!trimmed) throw new Error('Empty region target');
 
     // Precedence 1: opts.country scopes strictly to admin-1 inside that country
-    if (opts.country) {
+    if (o.country) {
       const r = getAdmin1(trimmed, {
-        country: opts.country,
-        source: opts.admin1Source,
-        countrySource: opts.countrySource ?? opts.source,
+        country: o.country,
+        source: o.admin1Source,
+        countrySource: o.countrySource ?? o.source,
       });
       return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
     }
 
     // Precedence 2: ISO-3166-2 code (e.g. 'CN-SC', 'US-CA')
     if (ISO_3166_2_RE.test(trimmed)) {
-      const r = findAdmin1(trimmed, { source: opts.admin1Source });
+      const r = findAdmin1(trimmed, { source: o.admin1Source });
       if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
     }
 
     // Precedence 3: Country before Admin-1 (preserves backward compat & lazy loading)
-    const c = findCountry(trimmed, opts.countrySource ?? opts.source);
+    const c = findCountry(trimmed, o.countrySource ?? o.source);
     if (c) return { kind: 'country', bbox: c.bbox, mainBBox: c.mainBBox, feature: c };
 
     // Precedence 4: Admin-1 fallback
-    const r = findAdmin1(trimmed, { source: opts.admin1Source });
+    const r = findAdmin1(trimmed, { source: o.admin1Source });
     if (r) return { kind: 'admin1', bbox: r.bbox, mainBBox: r.mainBBox, feature: r };
 
     // Build helpful suggestions across countries and admin-1
@@ -950,13 +1000,13 @@ function resolveRegion(target, opts = {}) {
     const minLen = minSuggestionLen(q);
     const near = [];
     if (q.length >= minLen) {
-      for (const item of loadCountries(opts.countrySource ?? opts.source).countries) {
+      for (const item of loadCountries(o.countrySource ?? o.source).countries) {
         if (norm(item.name).includes(q) || q.includes(norm(item.name))) {
           near.push(`${item.name} (${item.id})`);
           if (near.length >= 3) break;
         }
       }
-      for (const item of loadAdmin1(opts.admin1Source).regions) {
+      for (const item of loadAdmin1(o.admin1Source).regions) {
         if (norm(item.name).includes(q) || (item.zh && norm(item.zh).includes(q))) {
           near.push(`${item.name} (${item.id})`);
           if (near.length >= 5) break;
