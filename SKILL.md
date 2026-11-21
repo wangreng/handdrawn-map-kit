@@ -230,3 +230,23 @@ Follow this tight feedback loop when generating any new map:
    - `outOfBounds`: Check `outOfBoundsCount` (target `0`).
    - `emptyRegions`: Inspect open `sea` rectangles if you want to manually place insets or sea labels.
 6. **Final HD Render**: Once `overlapCount === 0` and `outOfBoundsCount === 0` and the fast preview looks balanced, render the final plate with `--hd`.
+
+## Private Local SVG Asset Library (`assets`)
+
+Inline `type: svg` illustrations can be saved locally for reuse across future maps **without ever modifying the repository or syncing to anyone else**:
+
+```bash
+# Save inline SVGs from a spec into your private local folder (~/.handdrawn-map/elements/)
+handdrawn-map render my-map.yaml -o out/my-map.png --hd --save-assets
+# Or extract without rendering:
+handdrawn-map assets save my-map.yaml
+
+# List available local private + repo built-in SVG assets
+handdrawn-map assets list --json
+handdrawn-map assets path
+```
+
+- Saved SVGs live strictly in your local machine's `~/.handdrawn-map/elements/<name>.svg` (override with `HANDDRAWN_MAP_ASSETS_DIR` or `--asset-dir <dir>`).
+- Once saved, any future spec can reference the asset directly by name (e.g. `type: baobab`) instead of repeating the inline `<svg>`.
+- The repository's `assets/elements/` folder is read-only by default; only a maintainer explicitly passing `--to-repo` writes into it.
+

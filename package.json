@@ -17,6 +17,7 @@
     "src/",
     "engine/",
     "data/",
+    "assets/",
     "SKILL.md",
     "LICENSE",
     "README.md"
