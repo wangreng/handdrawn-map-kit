@@ -114,6 +114,9 @@ function createMap(opts = {}) {
   };
 }
 
+const { loadSpec, validateSpec, planSpec, renderSpec } = require('./spec');
+const { createLayout } = require('./layout');
+
 module.exports = {
   createMap,
   createProjection: M.createProjection,
@@ -126,4 +129,10 @@ module.exports = {
   countriesInBBox: GEO.countriesInBBox,
   loadCountries: GEO.loadCountries,
   FLAGS: FLAGS.FLAGS,
+  // Declarative spec & layout diagnostics
+  loadSpec,
+  validateSpec,
+  planSpec,
+  renderSpec,
+  createLayout,
 };

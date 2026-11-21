@@ -4,15 +4,20 @@
   "license": "MIT",
   "description": "Standalone hand-drawn illustrated cultural map toolkit (inspired by Aleksandra & Daniel Mizielinski's Maps), extracted from statechart-art's dry-media engine.",
   "main": "src/index.js",
+  "bin": {
+    "handdrawn-map": "./bin/cli.js"
+  },
   "exports": {
     ".": "./src/index.js",
     "./elements": "./src/elements.js",
     "./package.json": "./package.json"
   },
   "files": [
+    "bin/",
     "src/",
     "engine/",
     "data/",
+    "SKILL.md",
     "LICENSE",
     "README.md"
   ],
@@ -29,7 +34,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@napi-rs/canvas": "1.0.13"
+    "@napi-rs/canvas": "1.0.13",
+    "js-yaml": "4.3.2"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
