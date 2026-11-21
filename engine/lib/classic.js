@@ -65,6 +65,12 @@ function plate(o) {
   P.dot = (x, y, r, color = INK) => { const m = maskOf([D.ell(x, y, r, r)]); MK.paint(S, m, (rr) => { const T = S.tool('pencil', { color, point: 'blunt' }); T.fillWith(rectOf(rr), { angle: 20, pressure: 0.98 }); T.fillWith(rectOf(rr), { angle: -40, pressure: 0.95 }); T.fillWith(rectOf(rr), { angle: 80, pressure: 0.9 }); }, 12, false); };
   P.text = (t, x, y, o2 = {}) => Lt.write(S, t, x, y, { face: 'serif', color: INK, ...o2 });
   P.italic = (t, x, y, o2 = {}) => Lt.write(S, t, x, y, { face: 'serif', color: INK, slant: 0.22, ...o2 });
+  P.block = (lines, cx, cy, o2 = {}) => Lt.block(S, lines, cx, cy, { face: 'serif', color: INK, ...o2 });
+  P.writeAlongPath = (t, pts, o2 = {}) => Lt.writeAlongPath(S, t, pts, { face: 'serif', color: INK, ...o2 });
+  P.writeBilingual = (primary, secondary, x, y, o2 = {}) => Lt.writeBilingual(S, primary, secondary, x, y, { face: 'serif', color: INK, ...o2 });
+  P.measureBox = (t, o2 = {}) => Lt.measureBox(t, { face: 'serif', ...o2 });
+  P.registerFont = Lt.registerFont;
+  P.listFonts = Lt.listFonts;
   P.finish = async (file, o2 = {}) => {
     const canvas = S.toCanvas();
     fs.mkdirSync(path.dirname(file), { recursive: true });

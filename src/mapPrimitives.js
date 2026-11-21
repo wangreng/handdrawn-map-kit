@@ -1,6 +1,7 @@
 'use strict';
 const D = require('../engine/lib/draw');
 const MK = require('../engine/lib/mask');
+const Lt = require('../engine/lib/letter');
 const { drawFlag } = require('./flags');
 
 // Authentic hand-colored vintage atlas palette
@@ -536,14 +537,45 @@ function drawCity(P, x, y, name, o = {}) {
   P.dot(x, y, o.capital ? 1.35 : 0.85, o.capital ? PALETTE.crimson : PALETTE.ink);
   if (o.capital) P.outline([D.ell(x, y, 2.0, 2.0)], { nib: 0.16, color: PALETTE.crimson });
   if (name) {
-    const dx = o.dx ?? 0, dy = o.dy ?? -2.2;
-    P.text(name, x + dx, y + dy, {
-      face: o.capital ? 'serif-bold' : 'sans-bold',
-      size: o.size ?? (o.capital ? 3.2 : 2.3),
+    const {
+      capital,
+      dx: optDx,
+      dy: optDy,
+      sub,
+      bilingualLayout,
+      layout: optLayout,
+      subSize: optSubSize,
+      subFace,
+      subColor,
+      ...typoOpts
+    } = o;
+    const size = o.size ?? (capital ? 3.2 : 2.3);
+    const textOpts = {
+      ...typoOpts,
+      face: o.face || (capital ? 'serif-bold' : 'sans-bold'),
+      size,
       align: o.align ?? 'center',
-      color: o.color || (o.capital ? PALETTE.crimson : PALETTE.ink),
-    });
+      color: o.color || (capital ? PALETTE.crimson : PALETTE.ink),
+    };
+
+    if (sub) {
+      const layout = bilingualLayout || optLayout || 'stack';
+      const subSize = o.secondarySize ?? optSubSize ?? size * 0.68;
+      const defaultDy = layout === 'stack' ? -(2.2 + size * 0.35 + subSize * 1.05) : -2.2;
+      const dx = optDx ?? 0, dy = optDy ?? defaultDy;
+      return P.writeBilingual(name, sub, x + dx, y + dy, {
+        ...textOpts,
+        layout,
+        secondarySize: subSize,
+        ...(o.secondaryFace || subFace ? { secondaryFace: o.secondaryFace || subFace } : {}),
+        ...(o.secondaryColor || subColor ? { secondaryColor: o.secondaryColor || subColor } : {}),
+      });
+    }
+
+    const dx = optDx ?? 0, dy = optDy ?? -2.2;
+    return P.text(name, x + dx, y + dy, textOpts);
   }
+  return null;
 }
 
 // True-North Rotatable Vintage Compass Rose + Faint Rhumb Lines
@@ -596,6 +628,56 @@ function drawCompass(P, cx, cy, r = 9, o = {}) {
   P.text('W', wx, wy + 0.6, { face: 'serif-bold', size: 2.3, align: 'center' });
 }
 
+const CARTOUCHE_LOCALE = {
+  en: {
+    facts: { capital: 'Capital', language: 'Language', population: 'Pop.', area: 'Area', sep: ': ' },
+    legend: { capital: 'Capital', city: 'Major City', route: 'Railway' },
+  },
+  zh: {
+    facts: { capital: '首都', language: '语言', population: '人口', area: '面积', sep: '：' },
+    legend: { capital: '首都', city: '主要城市', route: '铁路' },
+  },
+  ja: {
+    facts: { capital: '首都', language: '言語', population: '人口', area: '面積', sep: '：' },
+    legend: { capital: '首都', city: '主要都市', route: '鉄道' },
+  },
+  ko: {
+    facts: { capital: '수도', language: '언어', population: '인구', area: '면적', sep: ': ' },
+    legend: { capital: '수도', city: '주요 도시', route: '철도' },
+  },
+};
+
+// Fit text into maxW mm by scaling down to minSize, then truncating cleanly with '…' if still wider
+function fitTextToWidth(text, face, baseSize, maxW, minSize) {
+  const str = String(text ?? '');
+  if (!str || maxW <= 0) return { text: str, size: baseSize };
+  const measured = Lt.measure(str, face, baseSize);
+  if (measured <= maxW || measured <= 0) return { text: str, size: baseSize };
+
+  const scaled = baseSize * (maxW / measured);
+  if (scaled >= minSize) {
+    return { text: str, size: scaled };
+  }
+
+  const chars = [...str];
+  const ell = '…';
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const cand = chars.slice(0, mid).join('') + ell;
+    if (Lt.measure(cand, face, minSize) <= maxW) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const fitted = lo > 0 ? chars.slice(0, lo).join('') + ell : ell;
+  const fittedW = Lt.measure(fitted, face, minSize);
+  const finalSize = fittedW > maxW && fittedW > 0 ? minSize * (maxW / fittedW) : minSize;
+  return { text: fitted, size: finalSize };
+}
+
 // Framed Parchment Map Title, Country Facts, Legend & Graphical Scale Cartouche
 function drawCartouche(P, x, y, w, h, info = {}) {
   // Subtle drop shadow hatch
@@ -608,25 +690,66 @@ function drawCartouche(P, x, y, w, h, info = {}) {
     P.dot(rx, ry, 0.55, PALETTE.ochre);
   }
 
-  // Country Title + Waving National Flag
+  // Country Title + Waving National Flag (auto-scale/truncate title so CJK/long titles never collide with flag)
   if (info.country) {
-    P.text(info.country, x + 5.5, y + 12.2, { face: 'serif-bold', size: info.titleSize ?? 9.2, align: 'left', color: PALETTE.ink });
+    const baseTitleSize = info.titleSize ?? 9.2;
+    const maxTitleW = info.flag ? Math.max(4, w - 28.0) : Math.max(4, w - 11.0);
+    const { text: fittedTitle, size: titleSize } = fitTextToWidth(info.country, 'serif-bold', baseTitleSize, maxTitleW, 1.8);
+    P.text(fittedTitle, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: PALETTE.ink });
   }
   if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
-  if (info.subtitle) {
-    P.italic(info.subtitle, x + 5.8, y + 16.4, { face: 'serif-bold', size: 2.7, align: 'left', color: PALETTE.crimson });
+
+  // Subtitle (with optional bilingual secondary via info.subtitleSub or info.sub)
+  const maxSubW = Math.max(4, w - 11.6);
+  const secondarySub = info.subtitleSub || info.sub;
+  if (info.subtitle && secondarySub) {
+    const sep = '  ·  ';
+    const combined = `${info.subtitle}${sep}${secondarySub}`;
+    const { text: fittedSub, size: subSize } = fitTextToWidth(combined, 'serif-bold', 2.7, maxSubW, 1.5);
+    const prefix = `${info.subtitle}${sep}`;
+    if (fittedSub === combined) {
+      P.writeBilingual(info.subtitle, secondarySub, x + 5.8, y + 16.4, {
+        face: 'serif-bold',
+        size: subSize,
+        align: 'left',
+        color: PALETTE.crimson,
+        slant: 0.22,
+        layout: 'inline',
+        sep,
+      });
+    } else if (fittedSub.startsWith(prefix)) {
+      P.writeBilingual(info.subtitle, fittedSub.slice(prefix.length), x + 5.8, y + 16.4, {
+        face: 'serif-bold',
+        size: subSize,
+        align: 'left',
+        color: PALETTE.crimson,
+        slant: 0.22,
+        layout: 'inline',
+        sep,
+      });
+    } else {
+      P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
+    }
+  } else if (info.subtitle || secondarySub) {
+    const subText = info.subtitle || secondarySub;
+    const { text: fittedSub, size: subSize } = fitTextToWidth(subText, 'serif-bold', 2.7, maxSubW, 1.5);
+    P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
   }
 
   // Divider line
   P.ink([[x + 5, y + 18.6], [x + w - 5, y + 18.6]], { nib: 0.12, color: '#9c8e7b' });
 
   // Fact rows (left column) & Map Legend (right column)
-  const facts = info.facts || [
-    ['Capital', info.capital],
-    ['Language', info.language],
-    ['Pop.', info.population],
-    ['Area', info.area],
-  ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`);
+  const langKey = String(info.lang || 'en').toLowerCase().slice(0, 2);
+  const loc = CARTOUCHE_LOCALE[langKey] || CARTOUCHE_LOCALE.en;
+  const fl = { ...loc.facts, ...(info.factLabels || {}) };
+  const rawFacts = info.facts || [
+    [fl.capital, info.capital],
+    [fl.language, info.language],
+    [fl.population, info.population],
+    [fl.area, info.area],
+  ].filter(([, v]) => v);
+  const facts = rawFacts.map((entry) => (Array.isArray(entry) ? `${entry[0]}${fl.sep}${entry[1]}` : entry));
   facts.forEach((txt, i) => {
     P.text(txt, x + 5.5, y + 23.0 + i * 4.2, { face: 'sans-bold', size: 2.25, align: 'left', color: PALETTE.ink });
   });
@@ -634,9 +757,9 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   // Legend on right side of cartouche: [{ symbol: 'capital' | 'city' | 'route' | 'river', label, color }]
   const lx = x + w * 0.58;
   const legend = info.legend || [
-    { symbol: 'capital', label: 'Capital' },
-    { symbol: 'city', label: 'Major City' },
-    { symbol: 'route', label: 'Railway' },
+    { symbol: 'capital', label: loc.legend.capital },
+    { symbol: 'city', label: loc.legend.city },
+    { symbol: 'route', label: loc.legend.route },
   ];
   legend.forEach((item, i) => {
     const ly = y + 22.2 + i * 4.5;
@@ -676,9 +799,15 @@ function drawInsetBox(P, x, y, w, h, title) {
   P.ink([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]], { nib: 0.3, color: PALETTE.ink });
   P.ink([[x + 1.1, y + 1.1], [x + w - 1.1, y + 1.1], [x + w - 1.1, y + h - 1.1], [x + 1.1, y + h - 1.1], [x + 1.1, y + 1.1]], { nib: 0.12, color: PALETTE.ink });
   if (title) {
-    const tw = Math.min(w - 6, title.length * 1.9 + 6);
+    const baseSize = 2.3;
+    const maxTw = Math.max(4, w - 5);
+    const measured = Lt.measure(title, 'serif-bold', baseSize);
+    const padX = 5.5;
+    const tw = Math.min(maxTw, Math.max(Math.min(8, maxTw), measured + padX));
+    const maxTextW = Math.max(2, tw - 3.5);
+    const { text: fittedTitle, size: fitSize } = fitTextToWidth(title, 'serif-bold', baseSize, maxTextW, 1.2);
     part(P, D.rrect(x + 2.5, y + 2.2, x + 2.5 + tw, y + 7.2, 0.8), PALETTE.cream, { nib: 0.16 });
-    P.text(title, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: 2.3, align: 'center' });
+    P.text(fittedTitle, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center' });
   }
   return box;
 }
