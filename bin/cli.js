@@ -12,6 +12,7 @@ const Lt = require('../engine/lib/letter');
 const { ELEMENT_BOUNDS } = require('../src/layout');
 const { loadSpec, planSpec, renderSpec } = require('../src/spec');
 const ASSETS = require('../src/assets');
+const STYLES = require('../src/styles');
 
 const HELP_TEXT = `Usage:
   handdrawn-map render <spec> [options]
@@ -22,12 +23,13 @@ const HELP_TEXT = `Usage:
 Commands:
   render <spec>         Render a JSON or YAML map spec to PNG.
     -o, --out <file>    Output PNG path (default: out/<id-or-stem>.png)
+    --style <preset>    Override visual style preset (${STYLES.STYLE_NAMES.join(' | ')})
     --fast              Fast preview resolution (ppm = 5)
     --hd                High-definition resolution (ppm = 10)
     --ppm <n>           Explicit pixels per mm (overrides --fast/--hd)
     --diagnostics <p|-> Write layout diagnostics JSON to file or "-" for stdout
     --seed <str>        Override RNG seed
-    --no-border         Omit zebra border frame
+    --no-border         Omit border frame
     --auto-layout       Enable automatic empty-space placement & overlap avoidance
     --asset-dir <dir>   Extra local SVG asset directory to load/save
     --save-assets       Save inline SVG elements to your private local dir (~/.handdrawn-map/elements)
@@ -41,6 +43,7 @@ Commands:
     elements [query]    List built-in illustrated elements, local SVG assets, and person poses
     flags [query]       List built-in waving flag codes
     fonts [query]       List registered Latin & CJK fonts
+    styles [query]      List built-in visual style presets
     spec <file>         Validate & plan a spec (projection + layout diagnostics)
     --asset-dir <dir>   Extra local SVG asset directory to include
     --json              Output machine-readable JSON
@@ -77,6 +80,7 @@ async function handleRender(argv) {
       allowPositionals: true,
       options: {
         out: { type: 'string', short: 'o' },
+        style: { type: 'string' },
         fast: { type: 'boolean' },
         hd: { type: 'boolean' },
         ppm: { type: 'string' },
@@ -122,6 +126,7 @@ async function handleRender(argv) {
 
   const renderOpts = {};
   if (ppm !== undefined) renderOpts.ppm = ppm;
+  if (values.style !== undefined) renderOpts.style = values.style;
   if (values.seed !== undefined) renderOpts.seed = values.seed;
   if (values['no-border']) renderOpts.border = false;
   if (values['auto-layout']) renderOpts.autoLayout = true;
@@ -455,6 +460,31 @@ function handleInspect(argv) {
         process.stdout.write(`${f.name}\t[${(f.scripts || []).join(',')}]\t(${f.source || 'unknown'})\n`);
       }
       process.stdout.write(`(${fonts.length} fonts)\n`);
+    }
+    return 0;
+  }
+
+  if (kind === 'styles') {
+    const q = query ? query.toLowerCase() : '';
+    const styles = STYLES.STYLE_NAMES.map((name) => {
+      const s = STYLES.STYLES[name];
+      return {
+        name: s.name,
+        label: s.label,
+        paper: s.paper,
+        stroke: s.stroke.tool,
+        fill: s.fill.mode,
+        border: s.border,
+        description: s.description,
+      };
+    }).filter((s) => !q || s.name.toLowerCase().includes(q) || s.label.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
+    if (asJson) {
+      process.stdout.write(JSON.stringify(styles, null, 2) + '\n');
+    } else {
+      for (const s of styles) {
+        process.stdout.write(`${s.name}\t[${s.paper} / ${s.stroke} / ${s.border}]\t${s.label}\n`);
+      }
+      process.stdout.write(`(${styles.length} styles)\n`);
     }
     return 0;
   }

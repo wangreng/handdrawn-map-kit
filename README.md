@@ -16,7 +16,7 @@ Minimal runtime dependencies: `@napi-rs/canvas` (2D rasterization) and `js-yaml`
 - **65 Built-in Cultural, Landmark, Animal & Culinary Illustrations**: 43 classic East Asian & cartographic icons plus 22 new China, Europe, and world icons (`pavilion`, `greatWall`, `archBridge`, `lantern`, `panda`, `dumplings`, `teapot`, `cathedral`, `europeanCastle`, `windmill`, `romanArch`, `vineyard`, `oliveTree`, `cheeseWine`, `palmTree`, `volcano`, `waterfall`, `train`, `ship`, `hotAirBalloon`, `fish`, `yurt`), each reporting exact mm bounding boxes (`ELEMENT_BOUNDS`, `ELEMENT_META`, `elementBBox`), plus parameterized hand-drawn characters (`person`).
 - **CJK & Multilingual Hand-Drawn Typography**: Bundled `ZCOOL XiaoWei` (`engine/fonts/ZCOOLXiaoWei-Regular.ttf`, SIL OFL 1.1) + OS CJK font discovery + `registerFont()`, script-aware mixed Latin/Han/Kana/Hangul rendering, accurate `measureBox()`, **bilingual stacked/inline labels** (`writeBilingual`), **curved path labels** (`writeAlongPath`), rotated labels, and CJK-safe cartouches & inset boxes.
 - **Auto-Placement & Collision Avoidance (`src/layout.js`)**: Automatic empty-space placement (`placement: 'auto'`) preferring open sea with graceful landlocked fallback, priority-aware collision avoidance (`--auto-layout` / `layout.avoidOverlap`), callout routing, and structured mm bounding-box diagnostics.
-- **Vintage Atlas Styling & Performance**: Zebra neatline border, bathymetric shallow-water wash + concentric coastal waterlines, framed parchment cartouche (30+ built-in waving flags), rotatable compass rose, and ~6s `--fast` (`1500×1000`) / ~20s `--hd` (`3000×2000`) rendering.
+- **Multi-Style Rendering Presets (`src/styles.js`)**: Switch entire maps with one option (`style.preset` or `--style`): **`vintage-atlas`** (hotpress + fineliner + colored pencil + zebra border), **`blueprint`** (cyanotype navy + white/cyan gel + technical grid & crosshairs), **`nocturne`** (midnight obsidian + starfield ocean + gold gel + celestial frame), and **`ink-wash`** (xuan-paper + dynamic sumi `brush` with flying-white + mineral celadon `washBloom` + scroll frame & vermilion seal).
 
 ## Quick Start
 
@@ -27,12 +27,18 @@ npm install
 npx handdrawn-map render examples/specs/sichuan.yaml -o out/sichuan.png --fast --auto-layout --diagnostics out/sichuan.diag.json
 npx handdrawn-map render examples/specs/italy.yaml -o out/italy.png --fast --auto-layout --diagnostics out/italy.diag.json
 
-# Inspect bundled Natural Earth geography, elements, flags, and fonts
+# Switch visual style presets on any spec
+npx handdrawn-map render examples/specs/italy.yaml --style blueprint -o out/italy-blueprint.png --fast --auto-layout
+npx handdrawn-map render examples/specs/italy.yaml --style nocturne -o out/italy-nocturne.png --fast --auto-layout
+npx handdrawn-map render examples/specs/sichuan.yaml --style ink-wash -o out/sichuan-inkwash.png --fast --auto-layout
+
+# Inspect bundled Natural Earth geography, elements, flags, fonts, and styles
 npx handdrawn-map inspect admin1 China --json
 npx handdrawn-map inspect places Italy --json
 npx handdrawn-map inspect rivers Yangtze --json
 npx handdrawn-map inspect elements --json
 npx handdrawn-map inspect fonts --json
+npx handdrawn-map inspect styles --json
 
 # Classic JS atlas demos
 npm run demo            # Japan fast preview (1500x1000 px) -> out/japan_cultural_map.png
