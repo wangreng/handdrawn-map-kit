@@ -42,6 +42,9 @@ handdrawn-map inspect flags --json
 # List registered Latin & CJK fonts (including bundled ZCOOL XiaoWei)
 handdrawn-map inspect fonts --json
 
+# List built-in visual style presets (vintage-atlas, blueprint, nocturne, ink-wash)
+handdrawn-map inspect styles --json
+
 # Validate & plan a spec without rasterizing (fast projection + auto-layout diagnostics)
 handdrawn-map inspect spec my-map.yaml --json
 ```
@@ -52,6 +55,11 @@ handdrawn-map inspect spec my-map.yaml --json
 # Fast preview with auto-layout and structured diagnostics piped to stdout
 handdrawn-map render my-map.yaml -o out/my-map-fast.png --fast --auto-layout --diagnostics -
 
+# Render the same spec in an alternate visual style preset
+handdrawn-map render my-map.yaml --style blueprint -o out/my-map-blueprint.png --fast
+handdrawn-map render my-map.yaml --style nocturne -o out/my-map-nocturne.png --fast
+handdrawn-map render my-map.yaml --style ink-wash -o out/my-map-inkwash.png --fast
+
 # Write diagnostics JSON to a file
 handdrawn-map render my-map.yaml -o out/my-map-fast.png --fast --diagnostics out/my-map.diag.json
 
@@ -61,12 +69,13 @@ handdrawn-map render my-map.yaml -o out/my-map-hd.png --hd
 
 Supported flags for `render`:
 - `-o, --out <file>`: output PNG path (defaults to `out/<meta.id-or-stem>.png`).
+- `--style <preset>`: override visual style preset (`vintage-atlas` | `blueprint` | `nocturne` | `ink-wash`).
 - `--fast`: `ppm = 5` (`1500 × 1000 px` on default sheet).
 - `--hd`: `ppm = 10` (`3000 × 2000 px` on default sheet).
 - `--ppm <n>`: explicit pixels-per-mm override.
 - `--diagnostics <file.json|->`: emit layout diagnostics JSON (`-` writes pure JSON to `stdout` and summary to `stderr`).
 - `--seed <str>`: deterministic RNG seed override.
-- `--no-border`: omit the zebra neatline border (expands safe frame to full sheet).
+- `--no-border`: omit the border frame (expands safe frame to full sheet).
 - `--auto-layout`: activate both automatic empty-space placement (`autoPlace`) and collision avoidance (`avoidOverlap`).
 
 ## Declarative Spec Schema (`schemaVersion: 1`)
@@ -86,10 +95,11 @@ canvas:
   w: 300
   h: 200
   ppm: 10
-  paper: hotpress         # cartridge | cream | hotpress | grey | kraft | ...
+  paper: hotpress         # optional when style.preset is set; cartridge | cream | hotpress | navy | black | ...
   border: true
 
 style:
+  preset: vintage-atlas   # vintage-atlas | blueprint | nocturne | ink-wash
   palette:
     land: '#efe2c3'
     neighborLand: '#e2dac6'

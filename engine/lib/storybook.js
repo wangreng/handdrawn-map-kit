@@ -11,21 +11,22 @@ const SOFT = {
 };
 
 function plate(o) {
-  const P = classic.plate({ ...o, paper: o.paper || 'cartridge' });
-  P.INK = INK;
+  const inkColor = o.ink || INK;
+  const P = classic.plate({ ...o, paper: o.paper || 'cartridge', ink: inkColor });
+  P.INK = inkColor;
   const nibOf = (w) => Math.max(0.12, (w ?? 1.1) * 0.29);
   P.shape = (polys, o2 = {}) => {
     const fill = o2.fill ?? 'paper', m = P.paper(polys, { cut: o2.cut, clip: o2.clip });
     if (fill === 'black') P.dark(polys, { mask: m });
     else if (fill !== 'paper' && fill !== 'none') P.colour(polys, fill, { mask: m });
-    if (o2.outline !== false) P.outline(polys, { mask: m, nib: nibOf(o2.w), color: INK });
+    if (o2.outline !== false) P.outline(polys, { mask: m, nib: nibOf(o2.w), color: inkColor });
     return m;
   };
   P.black = (polys, o2 = {}) => P.shape(polys, { ...o2, fill: 'black' });
   P.dark = (polys, o2 = {}) => {
     const m = o2.mask || P.paper(polys, o2);
     P.colour(polys, '#4a4246', { mask: m, pressure: 0.6, passes: 1 });
-    P.hatch(polys, { mask: m, angle: 35, pitch: 0.42, nib: 0.14, cross: 1, color: INK });
+    P.hatch(polys, { mask: m, angle: 35, pitch: 0.42, nib: 0.14, cross: 1, color: inkColor });
     return m;
   };
   P.splash = (polys, color, o2 = {}) => P.colour(polys, color, { cut: o2.cut, clip: o2.clip, pressure: o2.pressure ?? 0.6, passes: o2.passes ?? 2 });
@@ -33,7 +34,7 @@ function plate(o) {
   P.loop = (pts, o2 = {}) => P.outline([pts], { nib: nibOf(o2.w ?? 1.1) });
   P.keepOut = () => {};
   P.keepOutPoly = () => {};
-  P.label = (t, x, y, o2 = {}) => Lt.write(P.S, t, x, y, { face: 'serif-bold', size: o2.size ?? 3, align: 'center', color: INK, ...o2 });
+  P.label = (t, x, y, o2 = {}) => Lt.write(P.S, t, x, y, { face: 'serif-bold', size: o2.size ?? 3, align: 'center', color: inkColor, ...o2 });
   P.shadow = (cx, cy, rx, ry) => P.hatch([D.ell(cx, cy, rx, ry)], { angle: 0, pitch: 0.55, nib: 0.11, color: '#5a5258' });
   return P;
 }

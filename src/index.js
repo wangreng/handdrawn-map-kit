@@ -9,6 +9,7 @@ const SVG = require('./svgDraw');
 const ASSETS = require('./assets');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
+const STYLES = require('./styles');
 
 function createMap(opts = {}) {
   const w = opts.w ?? 300;
@@ -16,6 +17,8 @@ function createMap(opts = {}) {
   const ppm = opts.ppm ?? 10;
   const pad = opts.pad ?? 4.8;
   const inner = opts.inner ?? 8.0;
+  const style = opts.style ? STYLES.resolveStyle(opts.style) : null;
+  const pal = style ? style.palette : M.PALETTE;
 
   const P = plate({
     id: opts.id || 'map',
@@ -23,11 +26,17 @@ function createMap(opts = {}) {
     h,
     ppm,
     seed: opts.seed || 'map-1',
-    paper: opts.paper || 'hotpress',
+    paper: opts.paper || (style ? style.paper : 'hotpress'),
+    ink: style ? pal.ink : undefined,
+    stroke: style ? style.stroke : undefined,
   });
+  if (style) {
+    P.style = style;
+    P.palette = pal;
+  }
 
   if (opts.ocean !== false) {
-    M.drawOcean(P, { pad, color: typeof opts.ocean === 'string' ? opts.ocean : M.PALETTE.ocean });
+    M.drawOcean(P, { pad, color: typeof opts.ocean === 'string' ? opts.ocean : pal.ocean });
   }
 
   let graticuleTicks = [];
@@ -41,7 +50,8 @@ function createMap(opts = {}) {
   return {
     P,
     D,
-    PALETTE: M.PALETTE,
+    PALETTE: pal,
+    style,
     POSES,
     part: (poly, color, o) => M.part(P, poly, color, o),
     at: M.at,
@@ -75,12 +85,12 @@ function createMap(opts = {}) {
       const all = [...out.neighbors, ...out.focus].filter((c) => c.rings.length);
       if (o.waterlines !== false && all.length) M.drawCoastWaterlines(P, all.flatMap((c) => c.rings), o.waterlines || {});
       for (const n of out.neighbors) {
-        M.part(P, n.rings, o.neighborColor || M.PALETTE.neighborLand, { pressure: 0.55, passes: 2, blunt: true, nib: 0.26, outlineColor: '#5c5549' });
+        M.part(P, n.rings, o.neighborColor || pal.neighborLand, { pressure: 0.55, passes: 2, blunt: true, nib: 0.26, outlineColor: pal.neighborOutline || '#5c5549' });
       }
       for (const [i, f] of out.focus.entries()) {
         if (!f.rings.length) continue;
-        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || M.PALETTE.land;
-        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: 0.32 });
+        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || pal.land;
+        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: 0.32, outlineColor: pal.ink });
       }
       return out;
     },
@@ -107,7 +117,7 @@ function createMap(opts = {}) {
         neighbors: neighbors.filter((r) => !ids.has(r.id)).map(ringsOf).filter((n) => n.rings.length),
       };
       const bordersOnly = o.bordersOnly ?? (focus.length === 0 && !o.fill);
-      const borderColor = o.borderColor || '#7d7365';
+      const borderColor = o.borderColor || pal.admin1Border || '#7d7365';
       const borderNib = o.borderNib ?? 0.16;
       const all = [...out.neighbors, ...out.focus].filter((r) => r.rings.length);
       if (o.waterlines && all.length) {
@@ -120,13 +130,13 @@ function createMap(opts = {}) {
         return out;
       }
       for (const n of out.neighbors) {
-        const fill = typeof o.fill === 'string' ? o.fill : (o.neighborColor || M.PALETTE.neighborLand);
+        const fill = typeof o.fill === 'string' ? o.fill : (o.neighborColor || pal.neighborLand);
         M.part(P, n.rings, fill, { pressure: 0.52, passes: 2, blunt: true, nib: o.neighborNib ?? 0.20, outlineColor: borderColor });
       }
       for (const [i, f] of out.focus.entries()) {
         if (!f.rings.length) continue;
-        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || M.PALETTE.land;
-        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: o.nib ?? 0.30, outlineColor: o.outlineColor || M.PALETTE.ink });
+        const color = (Array.isArray(o.color) ? o.color[i] : o.color) || pal.land;
+        M.part(P, f.rings, color, { pressure: 0.64, passes: 2, blunt: true, nib: o.nib ?? 0.30, outlineColor: o.outlineColor || pal.ink });
       }
       return out;
     },
@@ -149,7 +159,7 @@ function createMap(opts = {}) {
         const nib = typeof o.nib === 'function'
           ? o.nib(river)
           : (o.nib ?? Math.max(0.18, 0.56 - (river.rank ?? 5) * 0.045));
-        const color = o.color || M.PALETTE.river;
+        const color = o.color || pal.river;
         for (const run of runs) {
           P.ink(run, { nib, color, tremor: o.tremor ?? 0.45 });
         }
@@ -172,11 +182,12 @@ function createMap(opts = {}) {
       for (const lake of lakes) {
         const rings = M.geoRings(P, proj, lake.polygons, { ...o, minArea: o.minArea ?? 0.3 });
         if (!rings.length) continue;
-        M.part(P, rings, o.color || M.PALETTE.lake, {
+        M.part(P, rings, o.color || pal.lake, {
           pressure: o.pressure ?? 0.62,
           passes: o.passes ?? 2,
           nib: o.nib ?? 0.16,
-          outlineColor: o.outlineColor || '#4a7a96',
+          outlineColor: o.outlineColor || pal.lakeOutline || '#4a7a96',
+          hatchFill: false,
         });
         out.push({ lake, rings });
       }
@@ -408,6 +419,11 @@ module.exports = {
   resolveSvgAsset: ASSETS.resolveSvgAsset,
   saveSvgAsset: ASSETS.saveSvgAsset,
   saveAssetsFromSpec: ASSETS.saveAssetsFromSpec,
+  // Style presets
+  STYLES: STYLES.STYLES,
+  STYLE_NAMES: STYLES.STYLE_NAMES,
+  getStyle: STYLES.getStyle,
+  resolveStyle: STYLES.resolveStyle,
   // Element bounds & metadata
   ELEMENT_BOUNDS: EL.ELEMENT_BOUNDS,
   ELEMENT_META: EL.ELEMENT_META,

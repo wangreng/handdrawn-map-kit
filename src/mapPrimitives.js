@@ -3,40 +3,13 @@ const D = require('../engine/lib/draw');
 const MK = require('../engine/lib/mask');
 const Lt = require('../engine/lib/letter');
 const { drawFlag } = require('./flags');
+const { BASE_PALETTE } = require('./styles');
 
 // Authentic hand-colored vintage atlas palette
-const PALETTE = {
-  ink: '#26201c',
-  ocean: '#cde0e6',
-  oceanShallow: '#bad3dc',
-  oceanDeep: '#8db0bf',
-  graticule: '#89a7b5',
-  neighborLand: '#ded8c6',
-  land: '#f3e8cc',
-  landWarm: '#efe0bc',
-  landGreen: '#dfead0',
-  mountain: '#b89f82',
-  mountainLight: '#d8c7ad',
-  snow: '#fcfaf2',
-  river: '#5d93b3',
-  lake: '#8abbd4',
-  forest: '#8cb076',
-  forestDark: '#5e834e',
-  sakura: '#f2b8c6',
-  vermilion: '#d65340',
-  crimson: '#b8372e',
-  ochre: '#e0ad48',
-  terracotta: '#c97855',
-  navy: '#354f66',
-  cream: '#faf4e6',
-  paper: '#fbf7ee',
-  wood: '#b8895a',
-  gold: '#e8c160',
-  slate: '#8c9ea8',
-  matcha: '#7fa858',
-  orange: '#e07a2f',
-  brown: '#8c5a3c',
-};
+const PALETTE = { ...BASE_PALETTE };
+
+const palOf = (P) => (P && P.palette) || PALETTE;
+const styleOf = (P) => (P && P.style) || null;
 
 const rot = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
 const at = (x, y, s = 1, a = 0) => (pts) => pts.map((p) => {
@@ -45,6 +18,73 @@ const at = (x, y, s = 1, a = 0) => (pts) => pts.map((p) => {
 });
 
 function part(P, poly, color, o = {}) {
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const fillMode = o.fillMode || st?.fill?.mode || 'pencil';
+  const polys = Array.isArray(poly[0]) && Array.isArray(poly[0][0]) ? poly : [poly];
+  const outlineColor = o.outlineColor || pal.ink;
+
+  if (fillMode === 'ink-wash') {
+    P.paper(polys, { clip: o.clip, cut: o.cut });
+    if (color) {
+      washBloom(P, polys, color, {
+        strength: o.strength ?? st?.fill?.strength ?? 0.76,
+        toothAmt: o.toothAmt ?? st?.fill?.toothAmt ?? 0.38,
+        edgeAmt: o.edgeAmt ?? st?.fill?.edgeAmt ?? 0.32,
+        cloudAmt: o.cloudAmt ?? st?.fill?.cloudAmt ?? 0.24,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (o.shade) {
+      washBloom(P, polys, pal.mountain, {
+        clip: [o.shade],
+        strength: 0.36,
+        edgeAmt: 0.22,
+        cloudAmt: 0.18,
+      });
+    }
+    if (o.outline !== false) {
+      P.outline(polys, { nib: o.nib ?? 0.24, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  if (fillMode === 'blueprint' || fillMode === 'nocturne') {
+    P.paper(polys, { clip: o.clip, cut: o.cut });
+    if (color) {
+      wash(P, polys, color, {
+        strength: o.strength ?? st?.fill?.washStrength ?? 0.64,
+        toothAmt: o.toothAmt ?? st?.fill?.toothAmt ?? 0.26,
+        clip: o.clip,
+        cut: o.cut,
+      });
+      if (o.hatchFill !== false && st?.fill?.hatchPitch) {
+        const m = MK.maskOf(P.S, polys);
+        const bb = MK.bboxOf(P.S, m);
+        const spanMm = bb ? Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) / P.S.ppm : 0;
+        if (spanMm > 14) {
+          P.hatch(polys, {
+            mask: m,
+            angle: st.fill.hatchAngle ?? 42,
+            pitch: st.fill.hatchPitch ?? 1.6,
+            nib: 0.10,
+            color: st.fill.hatchColor || pal.graticule,
+            pressure: 0.45,
+          });
+        }
+      }
+    }
+    if (o.shade) {
+      P.hatch(polys, { clip: [o.shade], angle: o.hatch ?? 70, pitch: o.pitch ?? 0.85, nib: 0.09, color: pal.ink });
+    }
+    if (o.outline !== false) {
+      P.outline(polys, { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  // Default vintage-atlas pencil + fineliner pipeline (exact backward compatibility)
   P.paper([poly], { clip: o.clip, cut: o.cut });
   if (color) {
     P.colour([poly], color, {
@@ -190,6 +230,11 @@ function wash(P, polys, hexColor, o = {}) {
   const strength = o.strength ?? 0.76;
   const toothAmt = o.toothAmt ?? 0.35;
   const m = o.mask || MK.maskOf(P.S, polys);
+  if (o.cut) MK.subtract(P.S, m, o.cut);
+  if (o.clip) {
+    const c = MK.maskOf(P.S, o.clip);
+    for (let i = 0; i < m.length; i++) m[i] &= c[i];
+  }
   const bb = MK.bboxOf(P.S, m);
   if (!bb) return m;
   const { W, rgb, tooth, paper0 } = P.S;
@@ -213,10 +258,244 @@ function wash(P, polys, hexColor, o = {}) {
   return m;
 }
 
+// Wet watercolor / mineral ink-wash fill with organic pigment clouds and subtle wet edge granulation (水痕积墨边)
+function washBloom(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng } = require('../engine/kit/util');
+  const col = hexToRgb(hexColor);
+  const strength = o.strength ?? 0.74;
+  const toothAmt = o.toothAmt ?? 0.38;
+  const edgeAmt = o.edgeAmt ?? 0.30;
+  const cloudAmt = o.cloudAmt ?? 0.22;
+  const m = o.mask || MK.maskOf(P.S, polys);
+  if (o.cut) MK.subtract(P.S, m, o.cut);
+  if (o.clip) {
+    const c = MK.maskOf(P.S, o.clip);
+    for (let i = 0; i < m.length; i++) m[i] &= c[i];
+  }
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+
+  const { W, H, ppm, rgb, tooth, paper0 } = P.S;
+  const bw = bb.x1 - bb.x0 + 1;
+  const bh = bb.y1 - bb.y0 + 1;
+
+  // Build coarse smooth pigment cloud field over bbox
+  const cell = Math.max(6, Math.round(14 * ppm));
+  const gw = Math.ceil(bw / cell) + 3;
+  const gh = Math.ceil(bh / cell) + 3;
+  const R = rng(`${P.S.seed}:bloom:${hexColor}:${bb.x0}:${bb.y0}`);
+  const grid = new Float32Array(gw * gh);
+  for (let i = 0; i < grid.length; i++) grid[i] = R() * 2 - 1;
+  const invCell = 1 / cell;
+
+  // Approximate inner wet rim: check 4-direction neighborhood at ~1.4mm radius
+  const edgeR = Math.max(2, Math.round(1.3 * ppm));
+  // Darker mineral rim color (pigment pools at drying edge)
+  const rimCol = [
+    Math.max(0, col[0] * 0.80),
+    Math.max(0, col[1] * 0.82),
+    Math.max(0, col[2] * 0.82),
+  ];
+
+  for (let y = bb.y0; y <= bb.y1; y++) {
+    const row = y * W;
+    const fy = (y - bb.y0) * invCell;
+    const y0 = Math.floor(fy);
+    const ty = fy - y0;
+    const sy = ty * ty * (3 - 2 * ty);
+    for (let x = bb.x0; x <= bb.x1; x++) {
+      const i = row + x;
+      if (!m[i]) continue;
+      const j = 3 * i;
+      if (o.reset) {
+        rgb[j] = paper0[j]; rgb[j + 1] = paper0[j + 1]; rgb[j + 2] = paper0[j + 2];
+      }
+      const fx = (x - bb.x0) * invCell;
+      const x0 = Math.floor(fx);
+      const tx = fx - x0;
+      const sx = tx * tx * (3 - 2 * tx);
+      const a0 = grid[y0 * gw + x0];
+      const b0 = grid[y0 * gw + x0 + 1];
+      const c0 = grid[(y0 + 1) * gw + x0];
+      const d0 = grid[(y0 + 1) * gw + x0 + 1];
+      const cloud = (a0 + (b0 - a0) * sx) + ((c0 + (d0 - c0) * sx) - (a0 + (b0 - a0) * sx)) * sy;
+
+      let nearEdge = 0;
+      if (edgeAmt > 0) {
+        const xm = x - edgeR, xp = x + edgeR, ym = y - edgeR, yp = y + edgeR;
+        if (xm < 0 || xp >= W || ym < 0 || yp >= H
+          || !m[row + xm] || !m[row + xp] || !m[ym * W + x] || !m[yp * W + x]) {
+          nearEdge = 1;
+        }
+      }
+
+      const t = tooth[i];
+      const toothMod = 1 - toothAmt * (t - 0.5);
+      const cloudMod = 1 + cloudAmt * cloud;
+      const alpha = Math.max(0, Math.min(0.96, strength * toothMod * cloudMod * (1 + nearEdge * edgeAmt * 0.45)));
+      const edgeMix = nearEdge * edgeAmt * 0.55;
+      const tr = col[0] + (rimCol[0] - col[0]) * edgeMix;
+      const tg = col[1] + (rimCol[1] - col[1]) * edgeMix;
+      const tb = col[2] + (rimCol[2] - col[2]) * edgeMix;
+
+      rgb[j] += (tr - rgb[j]) * alpha;
+      rgb[j + 1] += (tg - rgb[j + 1]) * alpha;
+      rgb[j + 2] += (tb - rgb[j + 2]) * alpha;
+    }
+  }
+  return m;
+}
+
 // Fill ocean background inside frame in ~5ms while preserving full paper fibre texture!
-function drawOcean(P, { pad = 5, color = PALETTE.ocean } = {}) {
+function drawOcean(P, { pad = 5, color } = {}) {
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const oceanColor = color || pal.ocean;
+  const mode = st?.ocean?.mode || 'wash';
   const rect = [[pad, pad], [P.w - pad, pad], [P.w - pad, P.h - pad], [pad, P.h - pad]];
-  wash(P, [rect], color, { strength: 0.82, toothAmt: 0.38 });
+
+  if (mode === 'ink-wash') {
+    washBloom(P, [rect], oceanColor, {
+      strength: st.ocean.strength ?? 0.72,
+      toothAmt: st.ocean.toothAmt ?? 0.40,
+      edgeAmt: 0.14,
+      cloudAmt: st.ocean.cloudAmt ?? 0.24,
+    });
+    // Subtle aged xuan-paper warm vignette around the border
+    const vig = st.ocean.vignette ?? 0.16;
+    if (vig > 0) {
+      const { W, H, rgb } = P.S;
+      const cx = W / 2, cy = H / 2;
+      for (let y = 0; y < H; y++) {
+        const dy = (y - cy) / cy;
+        const row = y * W;
+        for (let x = 0; x < W; x++) {
+          const dx = (x - cx) / cx;
+          const r2 = Math.min(1, (dx * dx + dy * dy) * 0.55);
+          const d = r2 * r2 * vig;
+          if (d <= 0.002) continue;
+          const j = 3 * (row + x);
+          rgb[j] *= 1 - d * 0.65;
+          rgb[j + 1] *= 1 - d * 0.72;
+          rgb[j + 2] *= 1 - d * 0.85;
+        }
+      }
+    }
+    return;
+  }
+
+  if (mode === 'blueprint') {
+    wash(P, [rect], oceanColor, { strength: st.ocean.strength ?? 0.56, toothAmt: st.ocean.toothAmt ?? 0.25 });
+    // Crisp cyanotype architectural grid (10mm minor, 50mm major)
+    const { W, ppm, rgb, tooth } = P.S;
+    const step = st.ocean.gridStep ?? 10;
+    const x0 = Math.round(pad * ppm), x1 = Math.round((P.w - pad) * ppm);
+    const y0 = Math.round(pad * ppm), y1 = Math.round((P.h - pad) * ppm);
+    const gridRgb = [132, 186, 240];
+    const drawLine = (pos, horiz, alpha) => {
+      if (horiz) {
+        if (pos < y0 || pos >= y1) return;
+        for (let x = x0; x < x1; x++) {
+          const i = pos * W + x;
+          const a = alpha * (0.65 + 0.7 * tooth[i]);
+          const j = 3 * i;
+          rgb[j] += (gridRgb[0] - rgb[j]) * a;
+          rgb[j + 1] += (gridRgb[1] - rgb[j + 1]) * a;
+          rgb[j + 2] += (gridRgb[2] - rgb[j + 2]) * a;
+        }
+      } else {
+        if (pos < x0 || pos >= x1) return;
+        for (let y = y0; y < y1; y++) {
+          const i = y * W + pos;
+          const a = alpha * (0.65 + 0.7 * tooth[i]);
+          const j = 3 * i;
+          rgb[j] += (gridRgb[0] - rgb[j]) * a;
+          rgb[j + 1] += (gridRgb[1] - rgb[j + 1]) * a;
+          rgb[j + 2] += (gridRgb[2] - rgb[j + 2]) * a;
+        }
+      }
+    };
+    for (let mm = step, k = 1; mm < P.w - pad; mm += step, k++) {
+      drawLine(Math.round(mm * ppm), false, k % 5 === 0 ? 0.22 : 0.09);
+    }
+    for (let mm = step, k = 1; mm < P.h - pad; mm += step, k++) {
+      drawLine(Math.round(mm * ppm), true, k % 5 === 0 ? 0.22 : 0.09);
+    }
+    return;
+  }
+
+  if (mode === 'nocturne') {
+    const { rng } = require('../engine/kit/util');
+    wash(P, [rect], oceanColor, { strength: st.ocean.strength ?? 0.74, toothAmt: st.ocean.toothAmt ?? 0.26 });
+    const { W, H, ppm, rgb } = P.S;
+    // Deep radial celestial glow (slightly luminous indigo center, deep obsidian edges)
+    const cx = W / 2, cy = H / 2;
+    for (let y = 0; y < H; y++) {
+      const dy = (y - cy) / cy;
+      const row = y * W;
+      for (let x = 0; x < W; x++) {
+        const dx = (x - cx) / cx;
+        const glow = Math.max(0, 1 - (dx * dx + dy * dy) * 0.72);
+        const j = 3 * (row + x);
+        rgb[j] += glow * 10;
+        rgb[j + 1] += glow * 15;
+        rgb[j + 2] += glow * 28;
+      }
+    }
+    // Delicate starfield scattered across the night sea
+    if (st.ocean.stars !== false) {
+      const Rs = rng(`${P.S.seed}:nocturne:stars`);
+      const count = Math.round((P.w * P.h) / 260);
+      for (let k = 0; k < count; k++) {
+        const sx = (pad + 3 + Rs() * (P.w - 2 * pad - 6)) * ppm;
+        const sy = (pad + 3 + Rs() * (P.h - 2 * pad - 6)) * ppm;
+        const bright = Rs();
+        const starR = bright > 0.9 ? 1.55 : bright > 0.65 ? 1.05 : 0.7;
+        const starCol = bright > 0.75 ? [248, 224, 158] : [215, 228, 250];
+        const alpha = 0.28 + bright * 0.58;
+        const x0 = Math.max(0, Math.floor(sx - starR - 1));
+        const x1 = Math.min(W - 1, Math.ceil(sx + starR + 1));
+        const y0 = Math.max(0, Math.floor(sy - starR - 1));
+        const y1 = Math.min(H - 1, Math.ceil(sy + starR + 1));
+        for (let y = y0; y <= y1; y++) {
+          for (let x = x0; x <= x1; x++) {
+            const d = Math.hypot(x + 0.5 - sx, y + 0.5 - sy);
+            const cov = Math.max(0, 1 - d / (starR + 0.4));
+            if (cov <= 0) continue;
+            const a = cov * cov * alpha;
+            const j = 3 * (y * W + x);
+            rgb[j] += (starCol[0] - rgb[j]) * a;
+            rgb[j + 1] += (starCol[1] - rgb[j + 1]) * a;
+            rgb[j + 2] += (starCol[2] - rgb[j + 2]) * a;
+          }
+        }
+        // Subtle 4-point star cross on brightest stars
+        if (bright > 0.92) {
+          const arm = Math.round(starR * 2.8);
+          for (let d = -arm; d <= arm; d++) {
+            const a = (1 - Math.abs(d) / (arm + 1)) * 0.45;
+            const px = Math.round(sx) + d, py = Math.round(sy);
+            if (px >= 0 && px < W && py >= 0 && py < H) {
+              const j = 3 * (py * W + px);
+              rgb[j] += (starCol[0] - rgb[j]) * a;
+              rgb[j + 1] += (starCol[1] - rgb[j + 1]) * a;
+              rgb[j + 2] += (starCol[2] - rgb[j + 2]) * a;
+            }
+            const qx = Math.round(sx), qy = Math.round(sy) + d;
+            if (qx >= 0 && qx < W && qy >= 0 && qy < H) {
+              const j = 3 * (qy * W + qx);
+              rgb[j] += (starCol[0] - rgb[j]) * a;
+              rgb[j + 1] += (starCol[1] - rgb[j + 1]) * a;
+              rgb[j + 2] += (starCol[2] - rgb[j + 2]) * a;
+            }
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  wash(P, [rect], oceanColor, { strength: 0.82, toothAmt: 0.38 });
 }
 
 // Clip an open polyline to [x0, y0, x1, y1] using Liang-Barsky; runs start and end on the box edge.
@@ -470,11 +749,13 @@ function drawGraticule(P, proj, o = {}) {
   const ticks = [];
   const N = 160;
 
+  const pal = palOf(P);
+  const gratColor = o.color || pal.graticule;
   for (const lon of lons) {
     const raw = [];
     for (let i = 0; i <= N; i++) raw.push(proj(lon, Math.max(-89, Math.min(89, south + ((north - south) * i) / N))));
     for (const run of clipRuns(raw, x0, y0, x1, y1)) {
-      P.ink(run, { nib: 0.1, color: PALETTE.graticule, tremor: 0.25 });
+      P.ink(run, { nib: 0.1, color: gratColor, tremor: 0.25 });
       const text = degLabel(((((lon + 180) % 360) + 360) % 360) - 180, 'E', 'W'); // back into [-180, 180)
       for (const end of [run[0], run[run.length - 1]]) {
         if (Math.abs(end[1] - y1) < 0.5) ticks.push({ x: end[0], y: y1 - 1.2, text, side: 'bottom' });
@@ -486,7 +767,7 @@ function drawGraticule(P, proj, o = {}) {
     const raw = [];
     for (let i = 0; i <= N; i++) raw.push(proj(west + ((east - west) * i) / N, lat));
     for (const run of clipRuns(raw, x0, y0, x1, y1)) {
-      P.ink(run, { nib: 0.1, color: PALETTE.graticule, tremor: 0.25 });
+      P.ink(run, { nib: 0.1, color: gratColor, tremor: 0.25 });
       const text = degLabel(lat, 'N', 'S');
       for (const end of [run[0], run[run.length - 1]]) {
         if (Math.abs(end[0] - x0) < 0.5) ticks.push({ x: x0 + 1.4, y: end[1] + 0.8, text, side: 'left' });
@@ -499,35 +780,187 @@ function drawGraticule(P, proj, o = {}) {
 
 // Morphological antique-atlas coastal shallow tint + double concentric waterlines!
 function drawCoastWaterlines(P, polys, o = {}) {
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const mode = o.mode || st?.waterlines?.mode || 'concentric';
   const m = MK.maskOf(P.S, polys);
-  const r1 = MK.dilate(P.S, m, o.r1 ?? 1.4);
-  const r2 = MK.dilate(P.S, m, o.r2 ?? 2.8);
+  const r1 = MK.dilate(P.S, m, o.r1 ?? st?.waterlines?.r1 ?? 1.4);
+  const r2 = MK.dilate(P.S, m, o.r2 ?? st?.waterlines?.r2 ?? 2.8);
   const collar = new Uint8Array(r1.length);
   for (let i = 0; i < r1.length; i++) collar[i] = r1[i] && !m[i] ? 1 : 0;
-  wash(P, [], o.shallowColor || PALETTE.oceanShallow, { mask: collar, strength: 0.65, toothAmt: 0.35 });
-  MK.outline(P.S, P.pen(0.12, '#6994a8'), r1, { tremor: 0.45 });
-  MK.outline(P.S, P.pen(0.09, '#88aebf'), r2, { dash: 4.2, gap: 1.8 });
+
+  if (mode === 'ink-ripple') {
+    washBloom(P, [], o.shallowColor || pal.oceanShallow, { mask: collar, strength: 0.58, toothAmt: 0.42, edgeAmt: 0.25, cloudAmt: 0.25 });
+    MK.outline(P.S, P.pen(0.14, pal.waterline), r1, { tremor: 0.65 });
+    MK.outline(P.S, P.pen(0.10, pal.waterlineOuter), r2, { dash: 5.5, gap: 2.6, tremor: 0.7 });
+    return;
+  }
+
+  if (mode === 'glow') {
+    const outerCollar = new Uint8Array(r2.length);
+    for (let i = 0; i < r2.length; i++) outerCollar[i] = r2[i] && !r1[i] ? 1 : 0;
+    wash(P, [], o.shallowColor || pal.oceanShallow, { mask: collar, strength: 0.52, toothAmt: 0.22 });
+    wash(P, [], o.shallowColor || pal.oceanShallow, { mask: outerCollar, strength: 0.24, toothAmt: 0.22 });
+    MK.outline(P.S, P.pen(0.13, pal.waterline), r1, { tremor: 0.35 });
+    MK.outline(P.S, P.pen(0.09, pal.waterlineOuter), r2, { dash: 3.6, gap: 2.0, tremor: 0.3 });
+    return;
+  }
+
+  wash(P, [], o.shallowColor || pal.oceanShallow, { mask: collar, strength: 0.65, toothAmt: 0.35 });
+  MK.outline(P.S, P.pen(0.12, pal.waterline || '#6994a8'), r1, { tremor: 0.45 });
+  MK.outline(P.S, P.pen(0.09, pal.waterlineOuter || '#88aebf'), r2, { dash: 4.2, gap: 1.8 });
 }
 
 // Hand-drawn crinkled landmass (lower tension preserves real bays & peninsulas!)
 function drawLand(P, ctrlPts, o = {}) {
+  const pal = palOf(P);
   const poly = D.curve(ctrlPts, true, o.tension ?? 0.22);
-  part(P, poly, o.color || PALETTE.land, {
+  part(P, poly, o.color || pal.land, {
     pressure: o.pressure ?? 0.62,
     passes: o.passes ?? 2,
     blunt: true,
     nib: o.nib ?? 0.30,
-    outlineColor: o.outlineColor || PALETTE.ink,
+    outlineColor: o.outlineColor || pal.ink,
     clip: o.clip,
   });
   return poly;
 }
 
-// Classic Cartographic Zebra Neatline Border + Graticule Labels + Corner Rosettes (batched into 2 masks!)
+function drawTickLabels(P, ticks, inner, color) {
+  const { w, h } = P;
+  for (const t of ticks || []) {
+    if (t.x < inner + 10 || t.x > w - inner - 10) {
+      if (t.side === 'top' || t.side === 'bottom') continue;
+    }
+    if (t.y < inner + 8 || t.y > h - inner - 8) {
+      if (t.side === 'left' || t.side === 'right') continue;
+    }
+    const align = t.side === 'left' ? 'left' : t.side === 'right' ? 'right' : 'center';
+    P.text(t.text, t.x, t.y, { face: 'sans-bold', size: 1.85, align, color });
+  }
+}
+
+function drawBlueprintBorder(P, o, pal, pad, inner) {
+  const { w, h } = P;
+  // Clean deep navy paper margin
+  P.paper([
+    [[0, 0], [w, 0], [w, inner], [0, inner]],
+    [[0, h - inner], [w, h - inner], [w, h], [0, h]],
+    [[0, 0], [inner, 0], [inner, h], [0, h]],
+    [[w - inner, 0], [w, 0], [w, h], [w - inner, h]],
+  ]);
+  const band = inner - pad;
+  // Outer heavy + inner fine technical neatlines
+  P.ink([[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad], [pad, pad]], { nib: 0.34, color: pal.ink });
+  P.ink([[inner, inner], [w - inner, inner], [w - inner, h - inner], [inner, h - inner], [inner, inner]], { nib: 0.18, color: pal.borderAccent });
+  // Technical ruler ticks along all 4 sides
+  const step = o.step ?? 10;
+  for (let x = inner + step; x < w - inner - 1; x += step) {
+    const major = Math.round(x) % 50 === 0;
+    const len = major ? band : band * 0.55;
+    P.ink([[x, inner - len], [x, inner]], { nib: major ? 0.16 : 0.10, color: pal.borderAccent });
+    P.ink([[x, h - inner], [x, h - inner + len]], { nib: major ? 0.16 : 0.10, color: pal.borderAccent });
+  }
+  for (let y = inner + step; y < h - inner - 1; y += step) {
+    const major = Math.round(y) % 50 === 0;
+    const len = major ? band : band * 0.55;
+    P.ink([[inner - len, y], [inner, y]], { nib: major ? 0.16 : 0.10, color: pal.borderAccent });
+    P.ink([[w - inner, y], [w - inner + len, y]], { nib: major ? 0.16 : 0.10, color: pal.borderAccent });
+  }
+  // Corner registration crosshairs
+  const cr = band * 0.42;
+  for (const [cx, cy] of [[pad + band / 2, pad + band / 2], [w - pad - band / 2, pad + band / 2], [pad + band / 2, h - pad - band / 2], [w - pad - band / 2, h - pad - band / 2]]) {
+    P.outline([D.ell(cx, cy, cr, cr)], { nib: 0.13, color: pal.ink });
+    P.ink([[cx - cr * 1.3, cy], [cx + cr * 1.3, cy]], { nib: 0.11, color: pal.borderAccent });
+    P.ink([[cx, cy - cr * 1.3], [cx, cy + cr * 1.3]], { nib: 0.11, color: pal.borderAccent });
+  }
+  drawTickLabels(P, o.ticks, inner, pal.tickLabel);
+}
+
+function drawCelestialBorder(P, o, pal, pad, inner) {
+  const { w, h } = P;
+  P.paper([
+    [[0, 0], [w, 0], [w, inner], [0, inner]],
+    [[0, h - inner], [w, h - inner], [w, h], [0, h]],
+    [[0, 0], [inner, 0], [inner, h], [0, h]],
+    [[w - inner, 0], [w, 0], [w, h], [w - inner, h]],
+  ]);
+  const band = inner - pad;
+  const mid = pad + band * 0.5;
+  P.ink([[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad], [pad, pad]], { nib: 0.30, color: pal.borderAccent });
+  P.ink([[mid, mid], [w - mid, mid], [w - mid, h - mid], [mid, h - mid], [mid, mid]], { nib: 0.10, color: pal.graticule });
+  P.ink([[inner, inner], [w - inner, inner], [w - inner, h - inner], [inner, h - inner], [inner, inner]], { nib: 0.22, color: pal.ink });
+  // Degree ticks along the gold frame
+  const step = o.step ?? 15;
+  for (let x = inner + step; x < w - inner - 1; x += step) {
+    P.ink([[x, pad], [x, inner]], { nib: 0.11, color: pal.borderAccent });
+    P.ink([[x, h - inner], [x, h - pad]], { nib: 0.11, color: pal.borderAccent });
+  }
+  for (let y = inner + step; y < h - inner - 1; y += step) {
+    P.ink([[pad, y], [inner, y]], { nib: 0.11, color: pal.borderAccent });
+    P.ink([[w - inner, y], [w - pad, y]], { nib: 0.11, color: pal.borderAccent });
+  }
+  // 4-point celestial star medallions in the corners
+  const r = band * 0.48;
+  for (const [cx, cy] of [[pad + band / 2, pad + band / 2], [w - pad - band / 2, pad + band / 2], [pad + band / 2, h - pad - band / 2], [w - pad - band / 2, h - pad - band / 2]]) {
+    const star = [
+      [cx, cy - r], [cx + r * 0.28, cy - r * 0.28], [cx + r, cy], [cx + r * 0.28, cy + r * 0.28],
+      [cx, cy + r], [cx - r * 0.28, cy + r * 0.28], [cx - r, cy], [cx - r * 0.28, cy - r * 0.28],
+    ];
+    wash(P, [star], pal.borderAccent, { strength: 0.85, toothAmt: 0.18 });
+    P.outline([star], { nib: 0.12, color: pal.ink });
+  }
+  drawTickLabels(P, o.ticks, inner, pal.tickLabel);
+}
+
+function drawScrollBorder(P, o, pal, pad, inner) {
+  const { w, h } = P;
+  // Clean warm xuan-paper margin
+  P.paper([
+    [[0, 0], [w, 0], [w, inner], [0, inner]],
+    [[0, h - inner], [w, h - inner], [w, h], [0, h]],
+    [[0, 0], [inner, 0], [inner, h], [0, h]],
+    [[w - inner, 0], [w, 0], [w, h], [w - inner, h]],
+  ]);
+  const band = inner - pad;
+  // Subtle cream mounting silk tint inside the border band
+  wash(P, [
+    [[pad, pad], [w - pad, pad], [w - pad, inner], [pad, inner]],
+    [[pad, h - inner], [w - pad, h - inner], [w - pad, h - pad], [pad, h - pad]],
+    [[pad, inner], [inner, inner], [inner, h - inner], [pad, h - inner]],
+    [[w - inner, inner], [w - pad, inner], [w - pad, h - inner], [w - inner, h - inner]],
+  ], pal.cream, { strength: 0.72, toothAmt: 0.35 });
+  // Traditional Chinese bold outer brush frame + fine inner hairline (子母双线框)
+  P.ink([[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad], [pad, pad]], { nib: 0.50, color: pal.ink });
+  P.ink([[pad + band * 0.36, pad + band * 0.36], [w - pad - band * 0.36, pad + band * 0.36], [w - pad - band * 0.36, h - pad - band * 0.36], [pad + band * 0.36, h - pad - band * 0.36], [pad + band * 0.36, pad + band * 0.36]], { nib: 0.12, color: pal.ink });
+  P.ink([[inner, inner], [w - inner, inner], [w - inner, h - inner], [inner, h - inner], [inner, inner]], { nib: 0.22, color: pal.ink });
+  // Corner Chinese fretwork (回纹角饰) with subtle vermilion dots
+  const cSz = band + 3.2;
+  const drawCornerFret = (cx, cy, sx, sy) => {
+    P.ink([
+      [cx, cy + sy * cSz], [cx + sx * cSz, cy + sy * cSz], [cx + sx * cSz, cy],
+    ], { nib: 0.16, color: pal.ink });
+    P.dot(cx + sx * (band * 0.5), cy + sy * (band * 0.5), 0.55, pal.crimson);
+  };
+  drawCornerFret(pad, pad, 1, 1);
+  drawCornerFret(w - pad, pad, -1, 1);
+  drawCornerFret(pad, h - pad, 1, -1);
+  drawCornerFret(w - pad, h - pad, -1, -1);
+  drawTickLabels(P, o.ticks, inner, pal.tickLabel);
+}
+
+// Classic Cartographic Zebra Neatline Border + Graticule Labels + Corner Rosettes (dispatches by style.border)
 function drawZebraBorder(P, o = {}) {
   const { w, h } = P;
   const pad = o.pad ?? 4.8;
   const inner = o.inner ?? 8.0;
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const borderStyle = o.style || st?.border || 'zebra';
+
+  if (borderStyle === 'blueprint') return drawBlueprintBorder(P, o, pal, pad, inner);
+  if (borderStyle === 'celestial') return drawCelestialBorder(P, o, pal, pad, inner);
+  if (borderStyle === 'scroll') return drawScrollBorder(P, o, pal, pad, inner);
 
   // Clean paper margin around all 4 edges
   P.paper([
@@ -555,42 +988,95 @@ function drawZebraBorder(P, o = {}) {
     arr.push([[w - pad - band * 0.58, y], [w - pad, y], [w - pad, y2], [w - pad - band * 0.58, y2]]);
     ticks.push([[pad, y], [inner, y]], [[w - inner, y], [w - pad, y]]);
   }
-  wash(P, creamBars, PALETTE.cream, { strength: 0.85 });
-  wash(P, darkBars, PALETTE.ink, { strength: 0.88, toothAmt: 0.45 });
-  for (const [a, b] of ticks) P.ink([a, b], { nib: 0.14, color: PALETTE.ink });
-  P.ink([[pad, pad + band * 0.58], [w - pad, pad + band * 0.58]], { nib: 0.14, color: PALETTE.ink });
-  P.ink([[pad, h - pad - band * 0.58], [w - pad, h - pad - band * 0.58]], { nib: 0.14, color: PALETTE.ink });
-  P.ink([[pad + band * 0.58, pad], [pad + band * 0.58, h - pad]], { nib: 0.14, color: PALETTE.ink });
-  P.ink([[w - pad - band * 0.58, pad], [w - pad - band * 0.58, h - pad]], { nib: 0.14, color: PALETTE.ink });
+  wash(P, creamBars, pal.cream, { strength: 0.85 });
+  wash(P, darkBars, pal.ink, { strength: 0.88, toothAmt: 0.45 });
+  for (const [a, b] of ticks) P.ink([a, b], { nib: 0.14, color: pal.ink });
+  P.ink([[pad, pad + band * 0.58], [w - pad, pad + band * 0.58]], { nib: 0.14, color: pal.ink });
+  P.ink([[pad, h - pad - band * 0.58], [w - pad, h - pad - band * 0.58]], { nib: 0.14, color: pal.ink });
+  P.ink([[pad + band * 0.58, pad], [pad + band * 0.58, h - pad]], { nib: 0.14, color: pal.ink });
+  P.ink([[w - pad - band * 0.58, pad], [w - pad - band * 0.58, h - pad]], { nib: 0.14, color: pal.ink });
 
   // Outer & inner crisp neatlines
-  P.ink([[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad], [pad, pad]], { nib: 0.36, color: PALETTE.ink });
-  P.ink([[inner, inner], [w - inner, inner], [w - inner, h - inner], [inner, h - inner], [inner, inner]], { nib: 0.24, color: PALETTE.ink });
+  P.ink([[pad, pad], [w - pad, pad], [w - pad, h - pad], [pad, h - pad], [pad, pad]], { nib: 0.36, color: pal.ink });
+  P.ink([[inner, inner], [w - inner, inner], [w - inner, h - inner], [inner, h - inner], [inner, inner]], { nib: 0.24, color: pal.ink });
 
   // Corner ochre blocks
   for (const [x0, y0] of [[pad, pad], [w - inner, pad], [pad, h - inner], [w - inner, h - inner]]) {
-    part(P, [[x0, y0], [x0 + band, y0], [x0 + band, y0 + band], [x0, y0 + band]], PALETTE.ochre, { nib: 0.18 });
-    P.dot(x0 + band / 2, y0 + band / 2, 0.55, PALETTE.ink);
+    part(P, [[x0, y0], [x0 + band, y0], [x0 + band, y0 + band], [x0, y0 + band]], pal.ochre, { nib: 0.18 });
+    P.dot(x0 + band / 2, y0 + band / 2, 0.55, pal.ink);
   }
 
   // Graticule degree labels tucked cleanly just inside the neatline
-  for (const t of o.ticks || []) {
-    if (t.x < inner + 10 || t.x > w - inner - 10) {
-      if (t.side === 'top' || t.side === 'bottom') continue;
-    }
-    if (t.y < inner + 8 || t.y > h - inner - 8) {
-      if (t.side === 'left' || t.side === 'right') continue;
-    }
-    const align = t.side === 'left' ? 'left' : t.side === 'right' ? 'right' : 'center';
-    P.text(t.text, t.x, t.y, { face: 'sans-bold', size: 1.85, align, color: '#456473' });
-  }
+  drawTickLabels(P, o.ticks, inner, pal.tickLabel || '#456473');
 }
 
-// Overlapping jagged mountain range chain
+// Overlapping jagged mountain range chain (style-aware: classic / ink-wash / blueprint / nocturne)
 function drawMountainRange(P, peaks, o = {}) {
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const mode = o.style || st?.mountains || 'classic';
+
+  if (mode === 'ink-wash') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      // Soft rounded Shan-Shui silhouette with mineral celadon & ochre layered wash
+      const body = D.curve([
+        [cx - w * 1.15, by],
+        [cx - w * 0.55, by - h * 0.62],
+        [cx, by - h],
+        [cx + w * 0.52, by - h * 0.58],
+        [cx + w * 1.15, by],
+      ], true, 0.28);
+      washBloom(P, [body], o.color || pal.mountainLight, { strength: 0.72, edgeAmt: 0.36, cloudAmt: 0.25 });
+      // Deeper mineral-green peak crown wash
+      const crown = D.curve([
+        [cx - w * 0.58, by - h * 0.35],
+        [cx - w * 0.28, by - h * 0.78],
+        [cx, by - h],
+        [cx + w * 0.34, by - h * 0.72],
+        [cx + w * 0.62, by - h * 0.30],
+        [cx, by - h * 0.42],
+      ], true, 0.28);
+      washBloom(P, [crown], pal.mountain, { strength: 0.58, edgeAmt: 0.28, cloudAmt: 0.20 });
+      // Expressive brush contour & 披麻皴 ridge strokes
+      P.curve([[cx - w * 1.1, by], [cx - w * 0.48, by - h * 0.62], [cx, by - h], [cx + w * 0.5, by - h * 0.56], [cx + w * 1.1, by]], {
+        nib: 0.22,
+        color: pal.ink,
+        profile: 'swell',
+      });
+      P.curve([[cx, by - h * 0.96], [cx - w * 0.14, by - h * 0.48], [cx - w * 0.04, by - h * 0.10]], { nib: 0.14, color: pal.ink });
+      P.curve([[cx + w * 0.12, by - h * 0.75], [cx + w * 0.28, by - h * 0.35], [cx + w * 0.42, by - h * 0.08]], { nib: 0.11, color: pal.ink });
+      if (snow) {
+        const cap = [[cx, by - h], [cx + w * 0.28, by - h * 0.66], [cx + w * 0.08, by - h * 0.56], [cx - w * 0.12, by - h * 0.66], [cx - w * 0.28, by - h * 0.64]];
+        wash(P, [cap], pal.snow, { strength: 0.72, toothAmt: 0.25 });
+      }
+    }
+    return;
+  }
+
+  if (mode === 'blueprint' || mode === 'nocturne') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      const body = [[cx - w, by], [cx - w * 0.45, by - h * 0.52], [cx, by - h], [cx + w * 0.48, by - h * 0.48], [cx + w, by]];
+      wash(P, [body], o.color || pal.mountainLight, { strength: 0.52, toothAmt: 0.22 });
+      P.hatch([body], {
+        clip: [[[cx, by - h - 1], [cx + w + 1, by - h - 1], [cx + w + 1, by + 1], [cx, by + 1]]],
+        angle: 56,
+        pitch: 0.72,
+        nib: 0.10,
+        color: pal.borderAccent,
+      });
+      P.ink([[cx - w, by], [cx - w * 0.45, by - h * 0.52], [cx, by - h], [cx + w * 0.48, by - h * 0.48], [cx + w, by]], { nib: 0.18, color: pal.ink });
+      P.ink([[cx, by - h], [cx - w * 0.08, by - h * 0.42], [cx + w * 0.1, by - h * 0.08]], { nib: 0.11, color: pal.borderAccent });
+      if (snow) {
+        const cap = [[cx, by - h], [cx + w * 0.30, by - h * 0.64], [cx + w * 0.08, by - h * 0.54], [cx - w * 0.12, by - h * 0.64], [cx - w * 0.30, by - h * 0.62]];
+        wash(P, [cap], pal.snow, { strength: 0.62, toothAmt: 0.2 });
+      }
+    }
+    return;
+  }
+
   for (const [cx, by, w, h, snow] of peaks) {
     const body = [[cx - w, by], [cx - w * 0.45, by - h * 0.52], [cx, by - h], [cx + w * 0.48, by - h * 0.48], [cx + w, by]];
-    part(P, body, o.color || PALETTE.mountainLight, {
+    part(P, body, o.color || pal.mountainLight, {
       pressure: 0.55,
       passes: 1,
       nib: 0.16,
@@ -601,23 +1087,25 @@ function drawMountainRange(P, peaks, o = {}) {
     P.ink([[cx, by - h], [cx - w * 0.08, by - h * 0.42], [cx + w * 0.1, by - h * 0.08]], { nib: 0.11 });
     if (snow) {
       const cap = [[cx, by - h], [cx + w * 0.32, by - h * 0.62], [cx + w * 0.1, by - h * 0.52], [cx - w * 0.12, by - h * 0.64], [cx - w * 0.32, by - h * 0.62]];
-      part(P, cap, PALETTE.snow, { nib: 0.11, pressure: 0.35, passes: 1 });
+      part(P, cap, pal.snow, { nib: 0.11, pressure: 0.35, passes: 1 });
     }
   }
 }
 
 // Terraced green rice paddy fields
 function drawRiceFields(P, cx, cy, w = 14, h = 6) {
+  const pal = palOf(P);
   const poly = D.curve([[cx - w / 2, cy], [cx - w * 0.3, cy - h / 2], [cx + w * 0.3, cy - h * 0.45], [cx + w / 2, cy + 0.8], [cx + w * 0.2, cy + h / 2], [cx - w * 0.35, cy + h * 0.45]]);
-  part(P, poly, '#b8d18a', { nib: 0.14, pressure: 0.65 });
+  part(P, poly, styleOf(P)?.isDark ? pal.forest : '#b8d18a', { nib: 0.14, pressure: 0.65 });
   for (let i = -2; i <= 2; i++) {
     const yy = cy + i * (h * 0.18);
-    P.curve([[cx - w * 0.38, yy], [cx, yy - 0.6], [cx + w * 0.38, yy + 0.3]], { nib: 0.09, color: '#587842' });
+    P.curve([[cx - w * 0.38, yy], [cx, yy - 0.6], [cx + w * 0.38, yy + 0.3]], { nib: 0.09, color: styleOf(P)?.isDark ? pal.ink : '#587842' });
   }
 }
 
 // Gentle sea wave squiggles
 function drawWaves(P, x, y, s = 1, count = 2) {
+  const pal = palOf(P);
   for (let i = 0; i < count; i++) {
     const yy = y + i * 2.0 * s;
     const ox = i * 2.0 * s;
@@ -626,38 +1114,44 @@ function drawWaves(P, x, y, s = 1, count = 2) {
       const t = k / 12;
       pts.push([x + ox + t * 12 * s, yy + Math.sin(t * Math.PI * 3) * 0.68 * s]);
     }
-    P.ink(pts, { nib: 0.12, color: '#6992a6' });
+    P.ink(pts, { nib: 0.12, color: pal.waterline || '#6992a6' });
   }
 }
 
 // Winding river
 function drawRiver(P, ctrlPts, o = {}) {
-  P.curve(ctrlPts, { nib: o.nib ?? 0.42, color: o.color || PALETTE.river });
+  const pal = palOf(P);
+  P.curve(ctrlPts, { nib: o.nib ?? 0.42, color: o.color || pal.river });
 }
 
 // Dashed railway / maritime route
 function drawRoute(P, ctrlPts, o = {}) {
+  const pal = palOf(P);
   const pts = D.resample(D.curve(ctrlPts, false, 0.35), 1.2);
   for (let i = 0; i < pts.length - 2; i += 3) {
-    P.ink([pts[i], pts[i + 1]], { nib: o.nib ?? 0.18, color: o.color || PALETTE.crimson });
+    P.ink([pts[i], pts[i + 1]], { nib: o.nib ?? 0.18, color: o.color || pal.crimson });
   }
 }
 
 // Delicate curved pointer line connecting an offshore vignette to its bay/region
 function drawCallout(P, fromPt, toPt, o = {}) {
+  const pal = palOf(P);
   const mx = (fromPt[0] + toPt[0]) / 2 + (o.bendX ?? 0);
   const my = (fromPt[1] + toPt[1]) / 2 + (o.bendY ?? -2.2);
   const pts = D.resample(D.curve([fromPt, [mx, my], toPt], false, 0.35), 1.0);
   for (let i = 0; i < pts.length - 1; i += 2) {
-    P.ink([pts[i], pts[Math.min(pts.length - 1, i + 1)]], { nib: 0.11, color: o.color || '#6a5d52' });
+    P.ink([pts[i], pts[Math.min(pts.length - 1, i + 1)]], { nib: 0.11, color: o.color || pal.callout || '#6a5d52' });
   }
 }
 
 // City marker dot + crisp cartographic label
 function drawCity(P, x, y, name, o = {}) {
+  const pal = palOf(P);
+  const capCol = pal.crimson;
+  const cityCol = pal.ink;
   P.paper([D.ell(x, y, 1.25, 1.25)]);
-  P.dot(x, y, o.capital ? 1.35 : 0.85, o.capital ? PALETTE.crimson : PALETTE.ink);
-  if (o.capital) P.outline([D.ell(x, y, 2.0, 2.0)], { nib: 0.16, color: PALETTE.crimson });
+  P.dot(x, y, o.capital ? 1.35 : 0.85, o.capital ? capCol : cityCol);
+  if (o.capital) P.outline([D.ell(x, y, 2.0, 2.0)], { nib: 0.16, color: capCol });
   if (name) {
     const {
       capital,
@@ -677,7 +1171,7 @@ function drawCity(P, x, y, name, o = {}) {
       face: o.face || (capital ? 'serif-bold' : 'sans-bold'),
       size,
       align: o.align ?? 'center',
-      color: o.color || (capital ? PALETTE.crimson : PALETTE.ink),
+      color: o.color || (capital ? capCol : cityCol),
     };
 
     if (sub) {
@@ -702,23 +1196,32 @@ function drawCity(P, x, y, name, o = {}) {
 
 // True-North Rotatable Vintage Compass Rose + Faint Rhumb Lines
 function drawCompass(P, cx, cy, r = 9, o = {}) {
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const mode = o.style || st?.compass || 'classic';
   const rotA = o.angle ?? 0;
   const T = at(cx, cy, 1, rotA);
 
   // Subtle nautical rhumb lines radiating softly in the sea behind compass
   if (o.rhumb !== false) {
+    const rhumbOuter = mode === 'blueprint' || mode === 'celestial' ? r * 3.8 : r * 2.9;
+    const rhumbCol = mode === 'blueprint' || mode === 'celestial' ? pal.graticule : (pal.waterlineOuter || '#8baabf');
     for (let i = 0; i < 8; i++) {
       const a = rotA + (i * Math.PI) / 4;
       P.ink([
         [cx + Math.cos(a) * (r * 1.35), cy + Math.sin(a) * (r * 1.35)],
-        [cx + Math.cos(a) * (r * 2.9), cy + Math.sin(a) * (r * 2.9)],
-      ], { nib: 0.08, color: '#8baabf' });
+        [cx + Math.cos(a) * rhumbOuter, cy + Math.sin(a) * rhumbOuter],
+      ], { nib: 0.08, color: rhumbCol });
     }
   }
 
-  P.paper([D.ell(cx, cy, r * 1.12, r * 1.12)]);
-  P.outline([D.ell(cx, cy, r * 0.94, r * 0.94)], { nib: 0.15 });
-  P.outline([D.ell(cx, cy, r * 0.78, r * 0.78)], { nib: 0.09 });
+  if (st?.isDark) {
+    wash(P, [D.ell(cx, cy, r * 1.12, r * 1.12)], pal.cream, { strength: 0.82, toothAmt: 0.22 });
+  } else {
+    P.paper([D.ell(cx, cy, r * 1.12, r * 1.12)]);
+  }
+  P.outline([D.ell(cx, cy, r * 0.94, r * 0.94)], { nib: 0.15, color: pal.ink });
+  P.outline([D.ell(cx, cy, r * 0.78, r * 0.78)], { nib: 0.09, color: pal.borderAccent || pal.ink });
 
   // Secondary 4-point star
   const subStar = [];
@@ -727,7 +1230,7 @@ function drawCompass(P, cx, cy, r = 9, o = {}) {
     const rad = i % 2 === 0 ? r * 0.72 : r * 0.22;
     subStar.push([Math.cos(a) * rad, Math.sin(a) * rad]);
   }
-  part(P, T(subStar), PALETTE.slate, { nib: 0.12, pressure: 0.55 });
+  part(P, T(subStar), pal.slate, { nib: 0.12, pressure: 0.55, hatchFill: false });
 
   // Main 4-point star
   const star = [];
@@ -736,18 +1239,18 @@ function drawCompass(P, cx, cy, r = 9, o = {}) {
     const rad = i % 2 === 0 ? r * 1.05 : r * 0.26;
     star.push([Math.cos(a) * rad, Math.sin(a) * rad]);
   }
-  part(P, T(star), PALETTE.ochre, { nib: 0.18, pressure: 0.75 });
-  // Crimson North needle
-  part(P, T([[0, -r * 1.06], [r * 0.2, -r * 0.22], [0, 0], [-r * 0.2, -r * 0.22]]), PALETTE.crimson, { nib: 0.15 });
+  part(P, T(star), pal.ochre, { nib: 0.18, pressure: 0.75, hatchFill: false });
+  // Crimson / Gold North needle
+  part(P, T([[0, -r * 1.06], [r * 0.2, -r * 0.22], [0, 0], [-r * 0.2, -r * 0.22]]), pal.crimson, { nib: 0.15, hatchFill: false });
 
   const [nx, ny] = T([[0, -r * 1.34]])[0];
   const [sx, sy] = T([[0, r * 1.42]])[0];
   const [ex, ey] = T([[r * 1.36, 0.6]])[0];
   const [wx, wy] = T([[-r * 1.38, 0.6]])[0];
-  P.text('N', nx, ny + 1.0, { face: 'serif-bold', size: 3.1, align: 'center', color: PALETTE.crimson });
-  P.text('S', sx, sy + 0.9, { face: 'serif-bold', size: 2.3, align: 'center' });
-  P.text('E', ex, ey + 0.6, { face: 'serif-bold', size: 2.3, align: 'center' });
-  P.text('W', wx, wy + 0.6, { face: 'serif-bold', size: 2.3, align: 'center' });
+  P.text('N', nx, ny + 1.0, { face: 'serif-bold', size: 3.1, align: 'center', color: pal.crimson });
+  P.text('S', sx, sy + 0.9, { face: 'serif-bold', size: 2.3, align: 'center', color: pal.ink });
+  P.text('E', ex, ey + 0.6, { face: 'serif-bold', size: 2.3, align: 'center', color: pal.ink });
+  P.text('W', wx, wy + 0.6, { face: 'serif-bold', size: 2.3, align: 'center', color: pal.ink });
 }
 
 const CARTOUCHE_LOCALE = {
@@ -800,16 +1303,71 @@ function fitTextToWidth(text, face, baseSize, maxW, minSize) {
   return { text: fitted, size: finalSize };
 }
 
-// Framed Parchment Map Title, Country Facts, Legend & Graphical Scale Cartouche
+// Traditional Chinese vermilion square seal stamp (朱红印章) for ink-wash cartouches
+function drawSealStamp(P, cx, cy, sz, pal) {
+  const half = sz / 2;
+  const box = D.rrect(cx - half, cy - half, cx + half, cy + half, 0.5);
+  washBloom(P, [box], pal.crimson, { strength: 0.88, toothAmt: 0.42, edgeAmt: 0.25, cloudAmt: 0.15 });
+  P.outline([box], { nib: 0.16, color: pal.crimson });
+  // Crisp seal-script style inner frame & geometric character glyph in paper-cream
+  const pad = sz * 0.16;
+  P.ink([
+    [cx - half + pad, cy - half + pad],
+    [cx + half - pad, cy - half + pad],
+    [cx + half - pad, cy + half - pad],
+    [cx - half + pad, cy + half - pad],
+    [cx - half + pad, cy - half + pad],
+  ], { nib: 0.11, color: pal.cream, tremor: 0.35 });
+  P.ink([[cx, cy - half + pad * 1.4], [cx, cy + half - pad * 1.4]], { nib: 0.11, color: pal.cream, tremor: 0.35 });
+  P.ink([[cx - half + pad * 1.6, cy], [cx + half - pad * 1.6, cy]], { nib: 0.11, color: pal.cream, tremor: 0.35 });
+}
+
+// Framed Parchment / Blueprint / Nocturne / Scroll Cartouche
 function drawCartouche(P, x, y, w, h, info = {}) {
-  // Subtle drop shadow hatch
-  P.hatch([D.rrect(x + 1.4, y + 1.4, x + w + 1.4, y + h + 1.4, 1.5)], { angle: 45, pitch: 0.65, nib: 0.1, color: '#5c5349' });
-  // Parchment card + double inner hairline
-  part(P, D.rrect(x, y, x + w, y + h, 1.5), PALETTE.cream, { nib: 0.28, pressure: 0.55 });
-  P.outline([D.rrect(x + 1.5, y + 1.5, x + w - 1.5, y + h - 1.5, 1.0)], { nib: 0.12 });
-  // Brass corner rivets
-  for (const [rx, ry] of [[x + 3.0, y + 3.0], [x + w - 3.0, y + 3.0], [x + 3.0, y + h - 3.0], [x + w - 3.0, y + h - 3.0]]) {
-    P.dot(rx, ry, 0.55, PALETTE.ochre);
+  const st = styleOf(P);
+  const pal = palOf(P);
+  const mode = info.style || st?.cartouche || 'parchment';
+
+  if (mode === 'blueprint') {
+    const outer = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    const inner = [[x + 1.4, y + 1.4], [x + w - 1.4, y + 1.4], [x + w - 1.4, y + h - 1.4], [x + 1.4, y + h - 1.4]];
+    wash(P, [outer], pal.cream, { reset: true, strength: 0.90, toothAmt: 0.22 });
+    P.ink([...outer, outer[0]], { nib: 0.30, color: pal.ink });
+    P.ink([...inner, inner[0]], { nib: 0.12, color: pal.borderAccent });
+    // Technical corner registration ticks
+    for (const [rx, ry] of [[x + 3.0, y + 3.0], [x + w - 3.0, y + 3.0], [x + 3.0, y + h - 3.0], [x + w - 3.0, y + h - 3.0]]) {
+      P.ink([[rx - 0.8, ry], [rx + 0.8, ry]], { nib: 0.10, color: pal.borderAccent });
+      P.ink([[rx, ry - 0.8], [rx, ry + 0.8]], { nib: 0.10, color: pal.borderAccent });
+    }
+  } else if (mode === 'nocturne') {
+    const outer = D.rrect(x, y, x + w, y + h, 1.5);
+    const inner = D.rrect(x + 1.5, y + 1.5, x + w - 1.5, y + h - 1.5, 1.0);
+    wash(P, [outer], pal.cream, { reset: true, strength: 0.92, toothAmt: 0.22 });
+    P.outline([outer], { nib: 0.28, color: pal.borderAccent });
+    P.outline([inner], { nib: 0.12, color: pal.ink });
+    for (const [rx, ry] of [[x + 3.0, y + 3.0], [x + w - 3.0, y + 3.0], [x + 3.0, y + h - 3.0], [x + w - 3.0, y + h - 3.0]]) {
+      P.dot(rx, ry, 0.55, pal.borderAccent);
+    }
+  } else if (mode === 'scroll') {
+    const outer = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    const inner = [[x + 1.4, y + 1.4], [x + w - 1.4, y + 1.4], [x + w - 1.4, y + h - 1.4], [x + 1.4, y + h - 1.4]];
+    washBloom(P, [outer], pal.cream, { reset: true, strength: 0.92, toothAmt: 0.36, edgeAmt: 0.18, cloudAmt: 0.14 });
+    P.ink([...outer, outer[0]], { nib: 0.38, color: pal.ink });
+    P.ink([...inner, inner[0]], { nib: 0.12, color: pal.ink });
+    // Vermilion seal stamp tucked neatly in bottom-right corner
+    if (w >= 48 && h >= 28) {
+      drawSealStamp(P, x + w - 7.5, y + h - 7.5, 6.4, pal);
+    }
+  } else {
+    // Subtle drop shadow hatch
+    P.hatch([D.rrect(x + 1.4, y + 1.4, x + w + 1.4, y + h + 1.4, 1.5)], { angle: 45, pitch: 0.65, nib: 0.1, color: pal.shadow || '#5c5349' });
+    // Parchment card + double inner hairline
+    part(P, D.rrect(x, y, x + w, y + h, 1.5), pal.cream, { nib: 0.28, pressure: 0.55 });
+    P.outline([D.rrect(x + 1.5, y + 1.5, x + w - 1.5, y + h - 1.5, 1.0)], { nib: 0.12, color: pal.ink });
+    // Brass corner rivets
+    for (const [rx, ry] of [[x + 3.0, y + 3.0], [x + w - 3.0, y + 3.0], [x + 3.0, y + h - 3.0], [x + w - 3.0, y + h - 3.0]]) {
+      P.dot(rx, ry, 0.55, pal.ochre);
+    }
   }
 
   // Country Title + Waving National Flag (auto-scale/truncate title so CJK/long titles never collide with flag)
@@ -817,7 +1375,7 @@ function drawCartouche(P, x, y, w, h, info = {}) {
     const baseTitleSize = info.titleSize ?? 9.2;
     const maxTitleW = info.flag ? Math.max(4, w - 28.0) : Math.max(4, w - 11.0);
     const { text: fittedTitle, size: titleSize } = fitTextToWidth(info.country, 'serif-bold', baseTitleSize, maxTitleW, 1.8);
-    P.text(fittedTitle, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: PALETTE.ink });
+    P.text(fittedTitle, x + 5.5, y + 12.2, { face: 'serif-bold', size: titleSize, align: 'left', color: pal.ink });
   }
   if (info.flag) drawFlag(P, part, info.flag, x + w - 20.5, y + 4.4);
 
@@ -834,7 +1392,7 @@ function drawCartouche(P, x, y, w, h, info = {}) {
         face: 'serif-bold',
         size: subSize,
         align: 'left',
-        color: PALETTE.crimson,
+        color: pal.crimson,
         slant: 0.22,
         layout: 'inline',
         sep,
@@ -844,22 +1402,22 @@ function drawCartouche(P, x, y, w, h, info = {}) {
         face: 'serif-bold',
         size: subSize,
         align: 'left',
-        color: PALETTE.crimson,
+        color: pal.crimson,
         slant: 0.22,
         layout: 'inline',
         sep,
       });
     } else {
-      P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
+      P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: pal.crimson });
     }
   } else if (info.subtitle || secondarySub) {
     const subText = info.subtitle || secondarySub;
     const { text: fittedSub, size: subSize } = fitTextToWidth(subText, 'serif-bold', 2.7, maxSubW, 1.5);
-    P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: PALETTE.crimson });
+    P.italic(fittedSub, x + 5.8, y + 16.4, { face: 'serif-bold', size: subSize, align: 'left', color: pal.crimson });
   }
 
   // Divider line
-  P.ink([[x + 5, y + 18.6], [x + w - 5, y + 18.6]], { nib: 0.12, color: '#9c8e7b' });
+  P.ink([[x + 5, y + 18.6], [x + w - 5, y + 18.6]], { nib: 0.12, color: pal.divider || '#9c8e7b' });
 
   // Fact rows (left column) & Map Legend (right column)
   const langKey = String(info.lang || 'en').toLowerCase().slice(0, 2);
@@ -873,7 +1431,7 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   ].filter(([, v]) => v);
   const facts = rawFacts.map((entry) => (Array.isArray(entry) ? `${entry[0]}${fl.sep}${entry[1]}` : entry));
   facts.forEach((txt, i) => {
-    P.text(txt, x + 5.5, y + 23.0 + i * 4.2, { face: 'sans-bold', size: 2.25, align: 'left', color: PALETTE.ink });
+    P.text(txt, x + 5.5, y + 23.0 + i * 4.2, { face: 'sans-bold', size: 2.25, align: 'left', color: pal.ink });
   });
 
   // Legend on right side of cartouche: [{ symbol: 'capital' | 'city' | 'route' | 'river', label, color }]
@@ -886,17 +1444,17 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   legend.forEach((item, i) => {
     const ly = y + 22.2 + i * 4.5;
     if (item.symbol === 'capital') {
-      P.dot(lx, ly, 1.1, item.color || PALETTE.crimson);
-      P.outline([D.ell(lx, ly, 1.7, 1.7)], { nib: 0.13, color: item.color || PALETTE.crimson });
+      P.dot(lx, ly, 1.1, item.color || pal.crimson);
+      P.outline([D.ell(lx, ly, 1.7, 1.7)], { nib: 0.13, color: item.color || pal.crimson });
     } else if (item.symbol === 'city') {
-      P.dot(lx, ly + 0.1, 0.8, item.color || PALETTE.ink);
+      P.dot(lx, ly + 0.1, 0.8, item.color || pal.ink);
     } else if (item.symbol === 'river') {
-      P.ink([[lx - 2.0, ly], [lx + 2.2, ly]], { nib: 0.36, color: item.color || PALETTE.river });
+      P.ink([[lx - 2.0, ly], [lx + 2.2, ly]], { nib: 0.36, color: item.color || pal.river });
     } else {
-      P.ink([[lx - 2.0, ly], [lx - 0.3, ly]], { nib: 0.2, color: item.color || PALETTE.navy });
-      P.ink([[lx + 0.7, ly], [lx + 2.2, ly]], { nib: 0.2, color: item.color || PALETTE.navy });
+      P.ink([[lx - 2.0, ly], [lx - 0.3, ly]], { nib: 0.2, color: item.color || pal.navy });
+      P.ink([[lx + 0.7, ly], [lx + 2.2, ly]], { nib: 0.2, color: item.color || pal.navy });
     }
-    P.text(item.label, lx + 3.2, ly + 0.7, { face: 'sans', size: 2.15, align: 'left' });
+    P.text(item.label, lx + 3.2, ly + 0.7, { face: 'sans', size: 2.15, align: 'left', color: pal.ink });
   });
 
   // Graphical Scale Bar across bottom of cartouche: three segments of a round number of km
@@ -908,18 +1466,19 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   const seg = unit * mmPerKm;
   for (let k = 0; k < 3; k++) {
     const bx = sx0 + k * seg;
-    part(P, [[bx, sy], [bx + seg, sy], [bx + seg, sy + 1.4], [bx, sy + 1.4]], k % 2 === 0 ? PALETTE.ink : PALETTE.paper, { nib: 0.12 });
-    P.text(String(k * unit), bx, sy - 0.8, { face: 'sans', size: 1.85, align: 'center' });
+    part(P, [[bx, sy], [bx + seg, sy], [bx + seg, sy + 1.4], [bx, sy + 1.4]], k % 2 === 0 ? pal.ink : pal.paper, { nib: 0.12, hatchFill: false });
+    P.text(String(k * unit), bx, sy - 0.8, { face: 'sans', size: 1.85, align: 'center', color: pal.ink });
   }
-  P.text(`${3 * unit} km`, sx0 + 3 * seg, sy - 0.8, { face: 'sans-bold', size: 1.85, align: 'center' });
+  P.text(`${3 * unit} km`, sx0 + 3 * seg, sy - 0.8, { face: 'sans-bold', size: 1.85, align: 'center', color: pal.ink });
 }
 
 // Framed Inset Map Box (e.g., Ryukyu / Okinawa Islands)
 function drawInsetBox(P, x, y, w, h, title) {
+  const pal = palOf(P);
   const box = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
-  wash(P, [box], PALETTE.ocean, { reset: true, strength: 0.82, toothAmt: 0.38 });
-  P.ink([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]], { nib: 0.3, color: PALETTE.ink });
-  P.ink([[x + 1.1, y + 1.1], [x + w - 1.1, y + 1.1], [x + w - 1.1, y + h - 1.1], [x + 1.1, y + h - 1.1], [x + 1.1, y + 1.1]], { nib: 0.12, color: PALETTE.ink });
+  wash(P, [box], pal.ocean, { reset: true, strength: 0.82, toothAmt: 0.38 });
+  P.ink([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]], { nib: 0.3, color: pal.ink });
+  P.ink([[x + 1.1, y + 1.1], [x + w - 1.1, y + 1.1], [x + w - 1.1, y + h - 1.1], [x + 1.1, y + h - 1.1], [x + 1.1, y + 1.1]], { nib: 0.12, color: pal.ink });
   if (title) {
     const baseSize = 2.3;
     const maxTw = Math.max(4, w - 5);
@@ -928,8 +1487,8 @@ function drawInsetBox(P, x, y, w, h, title) {
     const tw = Math.min(maxTw, Math.max(Math.min(8, maxTw), measured + padX));
     const maxTextW = Math.max(2, tw - 3.5);
     const { text: fittedTitle, size: fitSize } = fitTextToWidth(title, 'serif-bold', baseSize, maxTextW, 1.2);
-    part(P, D.rrect(x + 2.5, y + 2.2, x + 2.5 + tw, y + 7.2, 0.8), PALETTE.cream, { nib: 0.16 });
-    P.text(fittedTitle, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center' });
+    part(P, D.rrect(x + 2.5, y + 2.2, x + 2.5 + tw, y + 7.2, 0.8), pal.cream, { nib: 0.16, hatchFill: false });
+    P.text(fittedTitle, x + 2.5 + tw / 2, y + 5.5, { face: 'serif-bold', size: fitSize, align: 'center', color: pal.ink });
   }
   return box;
 }
@@ -939,6 +1498,7 @@ module.exports = {
   at,
   part,
   wash,
+  washBloom,
   createProjection,
   fitProjection,
   geoRings,

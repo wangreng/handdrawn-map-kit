@@ -12,6 +12,7 @@ const SVG = require('./svgDraw');
 const ASSETS = require('./assets');
 const GEO = require('./geo');
 const FLAGS = require('./flags');
+const STYLES = require('./styles');
 const {
   createLayout,
   normalizeBBox,
@@ -212,6 +213,22 @@ function validateSpec(inputSpec, opts = {}) {
   // meta
   spec.meta = isPlainObject(spec.meta) ? spec.meta : {};
 
+  // style (resolved before canvas so style.preset can supply default paper)
+  spec.style = isPlainObject(spec.style) ? spec.style : {};
+  const effectivePreset = opts.style !== undefined ? opts.style : spec.style.preset;
+  let resolvedStyleObj = null;
+  if (effectivePreset !== undefined) {
+    if (typeof effectivePreset !== 'string' || !STYLES.resolveStyleName(effectivePreset)) {
+      errors.push(`Unknown style.preset "${effectivePreset}" (built-in: ${STYLES.STYLE_NAMES.join(', ')}).`);
+    } else {
+      spec.style.preset = STYLES.resolveStyleName(effectivePreset);
+      resolvedStyleObj = STYLES.getStyle(spec.style.preset);
+    }
+  }
+  if (spec.style.palette !== undefined && !isPlainObject(spec.style.palette)) {
+    errors.push('style.palette must be an object mapping color names to hex strings.');
+  }
+
   // canvas
   const rawCanvas = isPlainObject(spec.canvas) ? spec.canvas : {};
   const border = opts.border !== undefined ? opts.border : (rawCanvas.border !== false);
@@ -220,7 +237,9 @@ function validateSpec(inputSpec, opts = {}) {
   const ppm = opts.ppm !== undefined ? opts.ppm : (rawCanvas.ppm ?? 10);
   const pad = rawCanvas.pad ?? (border ? 4.8 : 0);
   const inner = rawCanvas.inner ?? (border ? 8.0 : 0);
-  const paper = rawCanvas.paper ?? 'hotpress';
+  const paper = (opts.style !== undefined && resolvedStyleObj)
+    ? resolvedStyleObj.paper
+    : (rawCanvas.paper ?? (resolvedStyleObj ? resolvedStyleObj.paper : 'hotpress'));
   const ocean = rawCanvas.ocean ?? true;
 
   if (!isFiniteNum(w) || w <= 0) errors.push(`canvas.w must be a positive number (got ${w}).`);
@@ -254,11 +273,6 @@ function validateSpec(inputSpec, opts = {}) {
 
   spec.canvas = { w, h, ppm, pad, inner, paper, ocean, border };
 
-  // style
-  spec.style = isPlainObject(spec.style) ? spec.style : {};
-  if (spec.style.palette !== undefined && !isPlainObject(spec.style.palette)) {
-    errors.push('style.palette must be an object mapping color names to hex strings.');
-  }
   if (isPlainObject(spec.style.font) && typeof spec.style.font.path === 'string') {
     const fp = path.resolve(resolveGeoSource(spec.style.font.path, baseDir));
     if (!fs.existsSync(fp)) {
@@ -829,10 +843,10 @@ function collectGeoRingsPure(proj, geo, canvas, baseDir, pal) {
 function labelDefaultsForKind(kind, pal, defaultFace) {
   const baseFace = defaultFace || 'serif-bold';
   if (kind === 'sea') {
-    return { face: baseFace, size: 3.4, align: 'center', color: '#426a80', spacing: 0.16, slant: 0.22 };
+    return { face: baseFace, size: 3.4, align: 'center', color: pal.seaLabel || '#426a80', spacing: 0.16, slant: 0.22 };
   }
   if (kind === 'region') {
-    return { face: baseFace, size: 2.5, align: 'center', color: '#7a6852', spacing: 0.22, slant: 0 };
+    return { face: baseFace, size: 2.5, align: 'center', color: pal.regionLabel || '#7a6852', spacing: 0.22, slant: 0 };
   }
   return { face: baseFace, size: 2.6, align: 'center', color: pal.ink, spacing: 0, slant: 0 };
 }
@@ -1540,7 +1554,15 @@ function planSpec(specOrPath, opts = {}) {
   }
 
   const spec = validation.spec;
-  const pal = { ...M.PALETTE, ...(spec.style.palette || {}) };
+  const hasStyle = Boolean(
+    spec.style.preset || spec.style.stroke || spec.style.fill || spec.style.border || spec.style.cartouche || spec.style.compass || spec.style.mountains || spec.style.waterlines,
+  );
+  const activeStyle = hasStyle
+    ? STYLES.resolveStyle(opts.style ? { ...spec.style, palette: undefined, preset: spec.style.preset } : spec.style)
+    : null;
+  const pal = activeStyle
+    ? activeStyle.palette
+    : { ...M.PALETTE, ...(spec.style.palette || {}) };
   const baseDir = spec.__baseDir || null;
   const effectiveInner = spec.canvas.border ? spec.canvas.inner : 0;
   const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);
@@ -1618,7 +1640,15 @@ function renderSpec(specOrPath, opts = {}) {
   }
 
   const spec = validation.spec;
-  const pal = { ...M.PALETTE, ...(spec.style.palette || {}) };
+  const hasStyle = Boolean(
+    spec.style.preset || spec.style.stroke || spec.style.fill || spec.style.border || spec.style.cartouche || spec.style.compass || spec.style.mountains || spec.style.waterlines,
+  );
+  const activeStyle = hasStyle
+    ? STYLES.resolveStyle(opts.style ? { ...spec.style, palette: undefined, preset: spec.style.preset } : spec.style)
+    : null;
+  const pal = activeStyle
+    ? activeStyle.palette
+    : { ...M.PALETTE, ...(spec.style.palette || {}) };
   const baseDir = spec.__baseDir || null;
   registerSpecFonts(spec, baseDir);
 
@@ -1642,6 +1672,7 @@ function renderSpec(specOrPath, opts = {}) {
     paper: spec.canvas.paper,
     ocean: oceanOpt,
     border: effectiveBorder,
+    style: activeStyle,
   });
 
   const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);

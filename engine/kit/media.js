@@ -133,6 +133,51 @@ function make(S, kind, o = {}) {
       };
       break;
     }
+    case 'brush': {
+      const c = col(o.color, NAMED.black);
+      const nib = o.nib || 0.45;
+      const dryness = clamp(o.dryness ?? 0.36, 0, 1);
+      Object.assign(M, {
+        comp: 0,
+        dry: true,
+        r0: nib * 0.72,
+        col: c,
+        opac: o.opac ?? 0.91,
+        fillRate: 18,
+        fillCap: 0.72,
+        p0: 0.56,
+        rp0: 0.35,
+        rp1: 1.15,
+        defProfile: 'swell',
+        smooth: 0.45,
+        tremor: 0.85,
+        flowKind: 'felt',
+        pvar: 0.26,
+      });
+      const Rb = rng('brush:' + (o.color || '') + nib);
+      const laneC = normLane(512, Rb, 1.4, 28, 4, 0.14);
+      const laneF = normLane(512, Rb, 0.35, 4.5, 4, 0.06);
+      M.lane = laneC; M.laneShift = 0;
+      // Sumi brush: soft tapered edges, bristle streaks along the stroke, and subtle flying-white (飞白)
+      // when pressure drops or along paper valleys.
+      M.amount = (p, d, r, v, s, h, fl) => {
+        const av = v < 0 ? -v : v;
+        if (av > 1.08) return 0;
+        const soft = Math.max(0.9, r * 0.28);
+        let cv = (r + soft * 0.55 - d + (h - 0.5) * 1.35) / soft;
+        if (cv <= 0) return 0;
+        if (cv > 1) cv = 1;
+        const idx = ((v * 0.5 + 0.5) * 240 + M.laneShift + s * 0.05) | 0;
+        const m = ((idx % 512) + 512) % 512;
+        const bristle = 0.5 * laneC[m] + 0.5 * laneF[(m * 3 + (M.laneShift >> 2)) % 512];
+        const edgeDry = smooth(0.42, 1.02, av);
+        const starve = smooth(0.12, 0.88, -bristle * (0.45 + dryness * 1.4) + (1 - p) * 0.45 + edgeDry * 0.35 + (1 - h) * 0.35 - 0.38);
+        const toothMod = 0.76 + 0.34 * h;
+        const a = cv * fl * (0.68 + 0.32 * p) * toothMod * (1 - (0.52 + 0.35 * dryness) * starve);
+        return a > 1 ? 1 : a < 0 ? 0 : a;
+      };
+      break;
+    }
     default: throw new Error('unknown tool kind ' + kind);
   }
   M.rp = (p) => M.rp0 + M.rp1 * p;
