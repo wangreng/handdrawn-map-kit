@@ -33,10 +33,18 @@ function createMap(opts = {}) {
   if (style) {
     P.style = style;
     P.palette = pal;
+    if (style.paperGranulation && style.paperGranulation !== 1) {
+      const g = style.paperGranulation;
+      for (let i = 0; i < P.S.tooth.length; i++) {
+        const v = 0.5 + (P.S.tooth[i] - 0.5) * g;
+        P.S.tooth[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+      }
+    }
   }
 
   if (opts.ocean !== false) {
-    M.drawOcean(P, { pad, color: typeof opts.ocean === 'string' ? opts.ocean : pal.ocean });
+    const oceanPad = (opts.border === false || style?.border === 'none') ? 0 : pad;
+    M.drawOcean(P, { pad: oceanPad, color: typeof opts.ocean === 'string' ? opts.ocean : pal.ocean });
   }
 
   let graticuleTicks = [];
@@ -54,6 +62,14 @@ function createMap(opts = {}) {
     style,
     POSES,
     part: (poly, color, o) => M.part(P, poly, color, o),
+    fillCollage: (polys, color, o) => M.fillCollage(P, polys, color, o),
+    fillDryGouache: (polys, color, o) => M.fillDryGouache(P, polys, color, o),
+    dryBrushStroke: (pts, color, o) => M.dryBrushStroke(P, pts, color, o),
+    fillSoftGrain: (polys, color, o) => M.fillSoftGrain(P, polys, color, o),
+    fillWatercolorMultiply: (polys, color, o) => M.fillWatercolorMultiply(P, polys, color, o),
+    cutPaperLayer: (polys, color, o) => M.cutPaperLayer(P, polys, color, o),
+    infographicSidebar: (box, info) => M.drawInfographicSidebar(P, box, info),
+    specimenSidebar: (box, info, fn) => M.drawSpecimenSidebar(P, box, info, fn),
     at: M.at,
     createProjection: M.createProjection,
     // Projection showing `target` (country, admin-1, { country, admin1 }, or [west, south, east, north])
@@ -100,7 +116,7 @@ function createMap(opts = {}) {
       const o = rawOpts || {};
       return M.geoRings(P, proj, GEO.getAdmin1(id, o).polygons, o);
     },
-    // Draw admin-1 regions (filled focus + neighbors, or borders-only overlay when no focus & no fill)
+    // Draw admin-1 regions (filled focus + neighbors, colorBy: 'region' | 'each', or borders-only overlay)
     admin1(proj, rawOpts) {
       const o = rawOpts || {};
       const focus = [].concat(o.focus || []).map((id) => GEO.getAdmin1(id, { country: o.country, source: o.source }));
@@ -116,13 +132,62 @@ function createMap(opts = {}) {
         focus: focus.map(ringsOf),
         neighbors: neighbors.filter((r) => !ids.has(r.id)).map(ringsOf).filter((n) => n.rings.length),
       };
-      const bordersOnly = o.bordersOnly ?? (focus.length === 0 && !o.fill);
+      const colorBy = o.colorBy || null;
+      const bordersOnly = o.bordersOnly ?? (focus.length === 0 && !o.fill && !colorBy);
       const borderColor = o.borderColor || pal.admin1Border || '#7d7365';
       const borderNib = o.borderNib ?? 0.16;
       const all = [...out.neighbors, ...out.focus].filter((r) => r.rings.length);
       if (o.waterlines && all.length) {
         M.drawCoastWaterlines(P, all.flatMap((r) => r.rings), typeof o.waterlines === 'object' ? o.waterlines : {});
       }
+
+      if (colorBy === 'region' || colorBy === 'each') {
+        const regColors = (Array.isArray(o.regionColors) && o.regionColors.length)
+          ? o.regionColors
+          : (style?.regionPalette || ['#e85a47', '#549e8a', '#3c6ca8', '#f2b830', '#f08943', '#84b067', '#d96c88', '#9065a3']);
+        const swatches = style?.collageSwatches || null;
+        const MK = require('../engine/lib/mask');
+
+        const groups = [];
+        if (colorBy === 'region') {
+          const byKey = new Map();
+          for (const item of all) {
+            const key = item.region.region || item.region.name || item.region.id;
+            if (!byKey.has(key)) {
+              const g = { key, rings: [] };
+              byKey.set(key, g);
+              groups.push(g);
+            }
+            byKey.get(key).rings.push(...item.rings);
+          }
+        } else {
+          for (const item of all) {
+            groups.push({ key: item.region.id, rings: item.rings });
+          }
+        }
+
+        groups.forEach((g, idx) => {
+          if (!g.rings.length) return;
+          const col = regColors[idx % regColors.length];
+          const sw = swatches ? swatches[idx % swatches.length] : null;
+          const partOpts = {
+            pressure: 0.60,
+            passes: 2,
+            blunt: true,
+            nib: o.nib ?? borderNib,
+            outlineColor: borderColor,
+            ...(sw ? { pattern: sw.pattern, patternColor: sw.patternColor, cutShadow: false } : {}),
+            ...(style?.fill?.mode === 'paper-cut' ? { elevation: 1.15, shadowDark: 0.26 } : {}),
+          };
+          M.part(P, g.rings, col, partOpts);
+          if (style?.fill?.mode === 'soft-grain') {
+            const rm = MK.maskOf(P.S, g.rings);
+            MK.outline(P.S, P.pen(o.borderNib ?? 0.30, borderColor, 'gel'), rm, { tremor: 0.15, smooth: 0.18 });
+          }
+        });
+        return out;
+      }
+
       if (bordersOnly) {
         for (const item of all) {
           P.outline(item.rings, { nib: borderNib, color: borderColor });
@@ -161,7 +226,16 @@ function createMap(opts = {}) {
           : (o.nib ?? Math.max(0.18, 0.56 - (river.rank ?? 5) * 0.045));
         const color = o.color || pal.river;
         for (const run of runs) {
-          P.ink(run, { nib, color, tremor: o.tremor ?? 0.45 });
+          if (style?.fill?.mode === 'gouache') {
+            M.dryBrushStroke(P, run, color, { width: nib * 3.2, opacity: 0.90, dryness: 0.24 });
+          } else if (style?.fill?.mode === 'paper-cut') {
+            const ribbon = M.polylineRibbon(run, Math.max(0.45, nib * 1.4));
+            if (ribbon) M.cutPaperLayer(P, [ribbon], color, { elevation: 0.55, shadowDark: 0.22, rimLight: 0.18 });
+          } else if (style?.fill?.mode === 'soft-grain') {
+            P.ink(run, { nib: Math.max(0.28, nib * 1.15), color, tool: 'gel', tremor: o.tremor ?? 0.22 });
+          } else {
+            P.ink(run, { nib, color, tremor: o.tremor ?? 0.45 });
+          }
         }
         out.push({ river, runs });
       }
@@ -348,7 +422,8 @@ function createMap(opts = {}) {
     el,
 
     async save(filePath, saveOpts = {}) {
-      if (opts.border !== false) {
+      const drawBorder = opts.border !== false && (opts.border === true || style?.border !== 'none');
+      if (drawBorder) {
         M.drawZebraBorder(P, { pad, inner, ticks: graticuleTicks });
       }
       return P.finish(filePath, saveOpts);
@@ -365,6 +440,16 @@ module.exports = {
   fitProjection: M.fitProjection,
   PALETTE: M.PALETTE,
   POSES,
+  // Procedural media, texture & lighting primitives
+  organicBlob: M.organicBlob,
+  fillCollage: M.fillCollage,
+  fillDryGouache: M.fillDryGouache,
+  dryBrushStroke: M.dryBrushStroke,
+  fillSoftGrain: M.fillSoftGrain,
+  fillWatercolorMultiply: M.fillWatercolorMultiply,
+  cutPaperLayer: M.cutPaperLayer,
+  drawInfographicSidebar: M.drawInfographicSidebar,
+  drawSpecimenSidebar: M.drawSpecimenSidebar,
   // Natural Earth country data
   getCountry: GEO.getCountry,
   findCountry: GEO.findCountry,

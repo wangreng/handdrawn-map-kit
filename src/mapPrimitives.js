@@ -17,12 +17,119 @@ const at = (x, y, s = 1, a = 0) => (pts) => pts.map((p) => {
   return [x + q[0], y + q[1]];
 });
 
+function shouldOutline(st, o) {
+  if (o.outline === false) return false;
+  if (o.outline === true) return true;
+  if (st?.stroke?.enabled === false) return false;
+  return true;
+}
+
+function resolveOutlineColor(st, pal, o) {
+  if (o.outlineColor) return o.outlineColor;
+  if (st?.stroke?.mode === 'tinted' && st.stroke.outlineColor) return st.stroke.outlineColor;
+  return pal.ink;
+}
+
 function part(P, poly, color, o = {}) {
   const st = styleOf(P);
   const pal = palOf(P);
   const fillMode = o.fillMode || st?.fill?.mode || 'pencil';
   const polys = Array.isArray(poly[0]) && Array.isArray(poly[0][0]) ? poly : [poly];
-  const outlineColor = o.outlineColor || pal.ink;
+  const outlineColor = resolveOutlineColor(st, pal, o);
+  const doOutline = shouldOutline(st, o);
+
+  if (fillMode === 'paper-cut') {
+    if (color) {
+      cutPaperLayer(P, polys, color, {
+        elevation: o.elevation ?? st?.fill?.elevation ?? 1.4,
+        shadowDark: o.shadowDark ?? st?.fill?.shadowDark ?? 0.34,
+        rimLight: o.rimLight ?? st?.fill?.rimLight ?? 0.28,
+        rimShade: o.rimShade ?? st?.fill?.rimShade ?? 0.22,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (o.outline === true) {
+      P.outline(polys, { nib: o.nib ?? 0.18, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  if (fillMode === 'gouache') {
+    if (color) {
+      fillDryGouache(P, polys, color, {
+        altColor: o.altColor,
+        angle: o.angle ?? st?.fill?.angle ?? -14,
+        opacity: o.opacity ?? st?.fill?.opacity ?? 0.96,
+        streakAmt: o.streakAmt ?? st?.fill?.streakAmt ?? 0.26,
+        dryEdgeMm: o.dryEdgeMm ?? st?.fill?.dryEdgeMm ?? 0.9,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (doOutline) {
+      P.outline(polys, { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  if (fillMode === 'soft-grain') {
+    if (color) {
+      fillSoftGrain(P, polys, color, {
+        shadeColor: o.shadeColor,
+        grainAmt: o.grainAmt ?? st?.fill?.grainAmt ?? 0.24,
+        opacity: o.opacity ?? st?.fill?.opacity ?? 0.96,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (doOutline) {
+      P.outline(polys, { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  if (fillMode === 'collage') {
+    if (color) {
+      fillCollage(P, polys, color, {
+        pattern: o.pattern ?? st?.fill?.pattern ?? 'linen',
+        patternColor: o.patternColor,
+        angle: o.angle ?? 32,
+        pitch: o.pitch ?? st?.fill?.pitch ?? 2.2,
+        strength: o.strength ?? st?.fill?.strength ?? 0.90,
+        toothAmt: o.toothAmt ?? st?.fill?.toothAmt ?? 0.30,
+        cutShadow: o.cutShadow ?? st?.fill?.cutShadow ?? false,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (doOutline) {
+      P.outline(polys, { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
+
+  if (fillMode === 'watercolor') {
+    P.paper(polys, { clip: o.clip, cut: o.cut });
+    if (color) {
+      fillWatercolorMultiply(P, polys, color, {
+        color2: o.color2,
+        strength: o.strength ?? st?.fill?.strength ?? 0.58,
+        granulation: o.granulation ?? st?.fill?.granulation ?? 0.44,
+        backrunAmt: o.backrunAmt ?? st?.fill?.backrunAmt ?? 0.34,
+        cloudAmt: o.cloudAmt ?? st?.fill?.cloudAmt ?? 0.28,
+        clip: o.clip,
+        cut: o.cut,
+      });
+    }
+    if (o.shade) {
+      P.hatch(polys, { clip: [o.shade], angle: o.hatch ?? 58, pitch: o.pitch ?? 0.55, nib: 0.10, color: outlineColor });
+    }
+    if (doOutline) {
+      P.outline(polys, { nib: o.nib ?? 0.20, clip: o.clip, cut: o.cut, color: outlineColor });
+    }
+    return;
+  }
 
   if (fillMode === 'ink-wash') {
     P.paper(polys, { clip: o.clip, cut: o.cut });
@@ -44,7 +151,7 @@ function part(P, poly, color, o = {}) {
         cloudAmt: 0.18,
       });
     }
-    if (o.outline !== false) {
+    if (doOutline) {
       P.outline(polys, { nib: o.nib ?? 0.24, clip: o.clip, cut: o.cut, color: outlineColor });
     }
     return;
@@ -78,7 +185,7 @@ function part(P, poly, color, o = {}) {
     if (o.shade) {
       P.hatch(polys, { clip: [o.shade], angle: o.hatch ?? 70, pitch: o.pitch ?? 0.85, nib: 0.09, color: pal.ink });
     }
-    if (o.outline !== false) {
+    if (doOutline) {
       P.outline(polys, { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: outlineColor });
     }
     return;
@@ -99,7 +206,7 @@ function part(P, poly, color, o = {}) {
   if (o.shade) {
     P.hatch([poly], { clip: [o.shade], angle: o.hatch ?? 70, pitch: o.pitch ?? 0.75, nib: 0.09 });
   }
-  if (o.outline !== false) {
+  if (doOutline) {
     P.outline([poly], { nib: o.nib ?? 0.22, clip: o.clip, cut: o.cut, color: o.outlineColor });
   }
 }
@@ -115,6 +222,11 @@ function createProjection(o = {}) {
   const cy = o.cy ?? 100;
   const scale = o.scale ?? 0.140;
   const a = ((o.rotDeg ?? 26) * Math.PI) / 180;
+  const obliqueCfg = o.oblique === true
+    ? { shearX: 0.10, scaleY: 0.92 }
+    : (o.oblique && typeof o.oblique === 'object' ? o.oblique : null);
+  const shearX = obliqueCfg ? (obliqueCfg.shearX ?? 0.10) : 0;
+  const scaleY = obliqueCfg ? (obliqueCfg.scaleY ?? 0.92) : 1;
 
   const wrap = (dLon) => (dLon > 180 ? dLon - 360 : dLon < -180 ? dLon + 360 : dLon);
   const project = (dLon, lat) => {
@@ -122,7 +234,9 @@ function createProjection(o = {}) {
     const yk = -(lat - lat0) * KM_PER_DEG_LAT;
     const xr = xk * Math.cos(a) - yk * Math.sin(a);
     const yr = xk * Math.sin(a) + yk * Math.cos(a);
-    return [cx + xr * scale, cy + yr * scale];
+    const sx = xr * scale;
+    const sy = yr * scale;
+    return [cx + sx + sy * shearX, cy + sy * scaleY];
   };
   const fn = (lon, lat) => project(wrap(lon - lon0), lat);
   fn.pts = (arr) => arr.map(([lon, lat]) => fn(lon, lat));
@@ -140,7 +254,9 @@ function createProjection(o = {}) {
   };
   // [x, y] mm -> [lon, lat]
   fn.inverse = (x, y) => {
-    const xr = (x - cx) / scale, yr = (y - cy) / scale;
+    const sy = (y - cy) / scaleY;
+    const sx = (x - cx) - sy * shearX;
+    const xr = sx / scale, yr = sy / scale;
     const xk = xr * Math.cos(a) + yr * Math.sin(a);
     const yk = -xr * Math.sin(a) + yr * Math.cos(a);
     const lat = Math.max(-89.9, Math.min(89.9, lat0 - yk / KM_PER_DEG_LAT));
@@ -166,7 +282,7 @@ function createProjection(o = {}) {
     return [w, s, e, n];
   };
   fn.mmPerKm = scale;
-  fn.params = { lon0, lat0, cx, cy, scale, rotDeg: o.rotDeg ?? 26 };
+  fn.params = { lon0, lat0, cx, cy, scale, rotDeg: o.rotDeg ?? 26, oblique: obliqueCfg };
   return fn;
 }
 
@@ -195,7 +311,7 @@ function fitProjection(bbox, o = {}) {
   const rawLon0 = (w + eNorm) / 2;
   const lon0 = rawLon0 > 180 ? rawLon0 - 360 : rawLon0;
   const lat0 = (s + n) / 2;
-  const unit = createProjection({ lon0, lat0, cx: 0, cy: 0, scale: 1, rotDeg });
+  const unit = createProjection({ lon0, lat0, cx: 0, cy: 0, scale: 1, rotDeg, oblique: o.oblique });
   let ax = Infinity, ay = Infinity, bx = -Infinity, by = -Infinity;
   for (let i = 0; i <= 16; i++) {
     const t = i / 16;
@@ -220,6 +336,7 @@ function fitProjection(bbox, o = {}) {
     cy: (y0 + y1) / 2 - ((ay + by) / 2) * scale,
     scale,
     rotDeg,
+    oblique: o.oblique,
   });
 }
 
@@ -346,13 +463,554 @@ function washBloom(P, polys, hexColor, o = {}) {
   return m;
 }
 
+function boxBlurFloat(src, W, H, r) {
+  if (r <= 0) return Float32Array.from(src);
+  const tmp = new Float32Array(W * H);
+  const dst = new Float32Array(W * H);
+  const k = 1 / (2 * r + 1);
+  for (let y = 0; y < H; y++) {
+    const o = y * W;
+    let acc = 0;
+    for (let x = -r; x <= r; x++) acc += src[o + Math.min(W - 1, Math.max(0, x))];
+    for (let x = 0; x < W; x++) {
+      tmp[o + x] = acc * k;
+      acc += src[o + Math.min(W - 1, x + r + 1)] - src[o + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < W; x++) {
+    let acc = 0;
+    for (let y = -r; y <= r; y++) acc += tmp[Math.min(H - 1, Math.max(0, y)) * W + x];
+    for (let y = 0; y < H; y++) {
+      dst[y * W + x] = acc * k;
+      acc += tmp[Math.min(H - 1, y + r + 1) * W + x] - tmp[Math.max(0, y - r) * W + x];
+    }
+  }
+  return dst;
+}
+
+// Natural irregular hand-painted organic blob polygon (avoids geometric ellipses in watercolor/gouache washes)
+function organicBlob(cx, cy, rx, ry, seedStr = 'blob', n = 22) {
+  const { rng } = require('../engine/kit/util');
+  const R = rng(`blob:${seedStr}`);
+  const pts = [];
+  const p1 = R() * Math.PI * 2;
+  const p2 = R() * Math.PI * 2;
+  const p3 = R() * Math.PI * 2;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const mod = 1 + 0.18 * Math.sin(2 * a + p1) + 0.13 * Math.cos(3 * a + p2) + 0.08 * Math.sin(5 * a + p3);
+    pts.push([cx + Math.cos(a) * rx * mod, cy + Math.sin(a) * ry * mod]);
+  }
+  return D.curve(pts, true, 0.35);
+}
+
+function resolveMask(S, polys, o) {
+  const m = o.mask || MK.maskOf(S, polys);
+  if (o.cut) MK.subtract(S, m, o.cut);
+  if (o.clip) {
+    const c = MK.maskOf(S, o.clip);
+    for (let i = 0; i < m.length; i++) m[i] &= c[i];
+  }
+  return m;
+}
+
+// 1. Procedural vintage paper collage fill (City Atlas): halftone dots, stripes, woven linen, crosshatch, speckle + cut-paper micro-shadow
+function fillCollage(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, H, ppm, rgb, tooth } = P.S;
+  const col = hexToRgb(hexColor);
+  const patCol = o.patternColor ? hexToRgb(o.patternColor) : col.map((v) => clamp(v * 0.78, 0, 255));
+  const pattern = o.pattern || 'solid';
+  const m = resolveMask(P.S, polys, o);
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+  const R = rng(`${P.S.seed}:collage:${hexColor}:${pattern}:${bb.x0}:${bb.y0}`);
+  const strength = o.strength ?? 0.90;
+  const toothAmt = o.toothAmt ?? 0.30;
+  const angle = ((o.angle ?? 32) * Math.PI) / 180;
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  const pitch = (o.pitch ?? 2.2) * ppm;
+
+  if (o.cutShadow) {
+    const shOffX = Math.round(0.55 * ppm);
+    const shOffY = Math.round(0.65 * ppm);
+    for (let y = bb.y0; y <= bb.y1; y++) {
+      const sy = y + shOffY;
+      if (sy < 0 || sy >= H) continue;
+      for (let x = bb.x0; x <= bb.x1; x++) {
+        if (!m[y * W + x]) continue;
+        const sx = x + shOffX;
+        if (sx < 0 || sx >= W || m[sy * W + sx]) continue;
+        const j = 3 * (sy * W + sx);
+        rgb[j] *= 0.80; rgb[j + 1] *= 0.79; rgb[j + 2] *= 0.77;
+      }
+    }
+  }
+
+  for (let y = bb.y0; y <= bb.y1; y++) {
+    const row = y * W;
+    for (let x = bb.x0; x <= bb.x1; x++) {
+      const i = row + x;
+      if (!m[i]) continue;
+      const t = tooth[i];
+      const grain = (R() - 0.5) * 8;
+      let pr = col[0], pg = col[1], pb = col[2];
+      let pat = 0;
+
+      if (pattern === 'stripes') {
+        const u = (((x * ca + y * sa) % pitch) + pitch) % pitch;
+        if (u < pitch * 0.28) pat = 0.24;
+      } else if (pattern === 'dots') {
+        const gx = (((x % pitch) + pitch) % pitch) - pitch * 0.5;
+        const gy = (((y % pitch) + pitch) % pitch) - pitch * 0.5;
+        if (gx * gx + gy * gy < (pitch * 0.22) ** 2) pat = 0.28;
+      } else if (pattern === 'linen') {
+        const step = Math.max(2, Math.round(pitch * 0.45));
+        if (x % step === 0 || y % step === 0) pat = 0.16;
+      } else if (pattern === 'cross') {
+        const u = (((x * ca + y * sa) % pitch) + pitch) % pitch;
+        const v = (((-x * sa + y * ca) % pitch) + pitch) % pitch;
+        if (u < 1.3 || v < 1.3) pat = 0.18;
+      } else if (pattern === 'speckle') {
+        if (R() < 0.08) pat = 0.30;
+      }
+
+      if (pat > 0) {
+        pr = pr * (1 - pat) + patCol[0] * pat;
+        pg = pg * (1 - pat) + patCol[1] * pat;
+        pb = pb * (1 - pat) + patCol[2] * pat;
+      }
+      const a = clamp(strength * (1 - toothAmt * (t - 0.5)), 0, 1);
+      const j = 3 * i;
+      rgb[j] += (clamp(pr + grain, 0, 255) - rgb[j]) * a;
+      rgb[j + 1] += (clamp(pg + grain, 0, 255) - rgb[j + 1]) * a;
+      rgb[j + 2] += (clamp(pb + grain, 0, 255) - rgb[j + 2]) * a;
+    }
+  }
+  return m;
+}
+
+// 2. Opaque dry-brush gouache fill (Atlas of Adventures): bristle streaks, optional vertical gradient & dry-tooth edge breakup
+function fillDryGouache(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, H, ppm, rgb, tooth } = P.S;
+  const col = hexToRgb(hexColor);
+  const altCol = o.altColor ? hexToRgb(o.altColor) : col.map((v) => clamp(v * 0.88 + 14, 0, 255));
+  const botCol = o.bottomColor ? hexToRgb(o.bottomColor) : null;
+  const m = resolveMask(P.S, polys, o);
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+
+  const angle = ((o.angle ?? -12) * Math.PI) / 180;
+  const ca = Math.cos(angle), sa = Math.sin(angle);
+  const R = rng(`${P.S.seed}:gouache:${hexColor}:${bb.x0}:${bb.y0}`);
+  const laneN = 512;
+  const lane = new Float32Array(laneN);
+  for (let i = 0; i < laneN; i++) lane[i] = R() * 2 - 1;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < laneN; i++) {
+      lane[i] = (lane[(i + laneN - 1) % laneN] + lane[i] * 2 + lane[(i + 1) % laneN]) * 0.25;
+    }
+  }
+
+  const dryEdgeMm = o.dryEdgeMm ?? 1.4;
+  const edgeR = dryEdgeMm > 0 ? Math.max(2, Math.round(dryEdgeMm * ppm)) : 0;
+  const opac = o.opacity ?? 0.94;
+  const streakAmt = o.streakAmt ?? 0.24;
+  const bh = Math.max(1, bb.y1 - bb.y0);
+
+  for (let y = bb.y0; y <= bb.y1; y++) {
+    const row = y * W;
+    const gy = (y - bb.y0) / bh;
+    for (let x = bb.x0; x <= bb.x1; x++) {
+      const i = row + x;
+      if (!m[i]) continue;
+      let nearEdge = 0;
+      if (edgeR > 0) {
+        const ex1 = Math.round(x + ca * edgeR), ey1 = Math.round(y + sa * edgeR);
+        const ex2 = Math.round(x - ca * edgeR), ey2 = Math.round(y - sa * edgeR);
+        if (ex1 < 0 || ex1 >= W || ey1 < 0 || ey1 >= H || !m[ey1 * W + ex1]) nearEdge = 1;
+        else if (ex2 < 0 || ex2 >= W || ey2 < 0 || ey2 >= H || !m[ey2 * W + ex2]) nearEdge = 1;
+      }
+
+      const u = (-x * sa + y * ca) * 0.55;
+      const v = (x * ca + y * sa) * 0.04;
+      const idx = (((Math.floor(u) + Math.floor(v)) % laneN) + laneN) % laneN;
+      const b = lane[idx];
+      const t = tooth[i];
+
+      let alpha = opac;
+      if (nearEdge) {
+        const dryTest = b * 0.7 + (t - 0.5) * 1.1;
+        if (dryTest < -0.18) continue;
+        alpha *= clamp(0.45 + (dryTest + 0.2) * 0.9, 0.2, 1);
+      } else {
+        alpha *= clamp(0.88 + 0.16 * t + 0.14 * b, 0.55, 1);
+      }
+
+      const baseR = botCol ? col[0] + (botCol[0] - col[0]) * gy : col[0];
+      const baseG = botCol ? col[1] + (botCol[1] - col[1]) * gy : col[1];
+      const baseB = botCol ? col[2] + (botCol[2] - col[2]) * gy : col[2];
+      const mix = clamp(0.5 + b * streakAmt * 2.2, 0, 1);
+      const cr = baseR + (altCol[0] - col[0]) * (mix - 0.5);
+      const cg = baseG + (altCol[1] - col[1]) * (mix - 0.5);
+      const cb = baseB + (altCol[2] - col[2]) * (mix - 0.5);
+      const j = 3 * i;
+      rgb[j] += (clamp(cr, 0, 255) - rgb[j]) * alpha;
+      rgb[j + 1] += (clamp(cg, 0, 255) - rgb[j + 1]) * alpha;
+      rgb[j + 2] += (clamp(cb, 0, 255) - rgb[j + 2]) * alpha;
+    }
+  }
+  return m;
+}
+
+// 3. Dry-brush sweeping gouache stroke (for waves, rivers, sunbursts, painterly trails)
+function dryBrushStroke(P, pts, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, H, ppm, rgb, tooth } = P.S;
+  if (!pts || pts.length < 2) return;
+  const col = hexToRgb(hexColor);
+  const radius = (o.width ?? 2.0) * 0.5 * ppm;
+  const opac = o.opacity ?? 0.88;
+  const dryness = o.dryness ?? 0.42;
+  const R = rng(`${P.S.seed}:dstroke:${hexColor}:${pts[0][0]}:${pts[0][1]}`);
+  const dense = D.resample(pts, 0.45);
+  const bristles = 16;
+  const bOff = Array.from({ length: bristles }, (_, k) => (k / (bristles - 1)) * 2 - 1);
+  const bStrength = Array.from({ length: bristles }, () => 0.45 + R() * 0.65);
+
+  for (let k = 0; k < dense.length - 1; k++) {
+    const ax = dense[k][0] * ppm, ay = dense[k][1] * ppm;
+    const bx = dense[k + 1][0] * ppm, by = dense[k + 1][1] * ppm;
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    const tProg = k / Math.max(1, dense.length - 1);
+    const fade = Math.sin(Math.PI * tProg) ** 0.35;
+    for (let b = 0; b < bristles; b++) {
+      if (R() < dryness * (0.2 + 0.5 * Math.abs(bOff[b]))) continue;
+      const off = bOff[b] * radius;
+      const px = Math.round((ax + bx) * 0.5 + nx * off);
+      const py = Math.round((ay + by) * 0.5 + ny * off);
+      const br = Math.max(1, Math.round(radius * 0.18));
+      for (let yy = py - br; yy <= py + br; yy++) {
+        if (yy < 0 || yy >= H) continue;
+        for (let xx = px - br; xx <= px + br; xx++) {
+          if (xx < 0 || xx >= W) continue;
+          const i = yy * W + xx;
+          const t = tooth[i];
+          if (t < dryness * 0.42) continue;
+          const a = clamp(opac * fade * bStrength[b] * (0.55 + 0.55 * t), 0, 1);
+          const j = 3 * i;
+          rgb[j] += (col[0] - rgb[j]) * a;
+          rgb[j + 1] += (col[1] - rgb[j + 1]) * a;
+          rgb[j + 2] += (col[2] - rgb[j + 2]) * a;
+        }
+      }
+    }
+  }
+}
+
+// 4. Soft-grain flat geometric risograph fill (The 50 States)
+function fillSoftGrain(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, rgb, tooth } = P.S;
+  const col = hexToRgb(hexColor);
+  const shadeCol = o.shadeColor ? hexToRgb(o.shadeColor) : col.map((v) => clamp(v * 0.78, 0, 255));
+  const m = resolveMask(P.S, polys, o);
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+  const R = rng(`${P.S.seed}:grain:${hexColor}:${bb.x0}:${bb.y0}`);
+  const grainAmt = o.grainAmt ?? 0.24;
+  const opac = o.opacity ?? 0.96;
+  const bw = Math.max(1, bb.x1 - bb.x0);
+  const bh = Math.max(1, bb.y1 - bb.y0);
+
+  for (let y = bb.y0; y <= bb.y1; y++) {
+    const row = y * W;
+    const ny = (y - bb.y0) / bh;
+    for (let x = bb.x0; x <= bb.x1; x++) {
+      const i = row + x;
+      if (!m[i]) continue;
+      const nx = (x - bb.x0) / bw;
+      const grad = clamp((nx * 0.45 + ny * 0.55) * 1.15 - 0.15, 0, 1);
+      const stipple = R() < grad * grainAmt * 1.6 ? 1 : 0;
+      const speck = (R() - 0.5) * 14 * grainAmt + (tooth[i] - 0.5) * 10;
+      const cr = clamp((stipple ? shadeCol[0] : col[0]) + speck, 0, 255);
+      const cg = clamp((stipple ? shadeCol[1] : col[1]) + speck, 0, 255);
+      const cb = clamp((stipple ? shadeCol[2] : col[2]) + speck, 0, 255);
+      const j = 3 * i;
+      rgb[j] += (cr - rgb[j]) * opac;
+      rgb[j + 1] += (cg - rgb[j + 1]) * opac;
+      rgb[j + 2] += (cb - rgb[j + 2]) * opac;
+    }
+  }
+  return m;
+}
+
+// 5. True Beer-Lambert multiply transparent watercolor wash with granulation, backruns & optional feathered wet-on-wet bleed
+function fillWatercolorMultiply(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, H, ppm, rgb, tooth } = P.S;
+  const col = hexToRgb(hexColor);
+  const col2 = o.color2 ? hexToRgb(o.color2) : col;
+  const m = resolveMask(P.S, polys, o);
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+
+  const strength = o.strength ?? 0.65;
+  const granulation = o.granulation ?? 0.42;
+  const backrunAmt = o.backrunAmt ?? 0.36;
+  const cloudAmt = o.cloudAmt ?? 0.30;
+  const featherMm = o.featherMm ?? 0;
+  const clipMask = o.clipMask || null;
+
+  const padPx = featherMm > 0 ? Math.ceil(featherMm * ppm * 2.2) + 2 : 0;
+  const x0 = Math.max(0, bb.x0 - padPx), y0 = Math.max(0, bb.y0 - padPx);
+  const x1 = Math.min(W - 1, bb.x1 + padPx), y1 = Math.min(H - 1, bb.y1 + padPx);
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+
+  let alphaField = null;
+  if (featherMm > 0) {
+    const src = new Float32Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      const sRow = (y + y0) * W, dRow = y * bw;
+      for (let x = 0; x < bw; x++) src[dRow + x] = m[sRow + x + x0];
+    }
+    const r = Math.max(2, Math.round(featherMm * ppm));
+    alphaField = boxBlurFloat(boxBlurFloat(src, bw, bh, r), bw, bh, Math.max(1, Math.round(r * 0.7)));
+  }
+
+  const cell1 = Math.max(6, Math.round(16 * ppm));
+  const cell2 = Math.max(3, Math.round(5.5 * ppm));
+  const makeGrid = (cell, tag) => {
+    const gw = Math.ceil(bw / cell) + 3, gh = Math.ceil(bh / cell) + 3;
+    const R = rng(`${P.S.seed}:wc:${tag}:${hexColor}:${x0}:${y0}`);
+    const g = new Float32Array(gw * gh);
+    for (let i = 0; i < g.length; i++) g[i] = R() * 2 - 1;
+    return { g, gw, inv: 1 / cell };
+  };
+  const g1 = makeGrid(cell1, 'c1');
+  const g2 = makeGrid(cell2, 'c2');
+  const sampleG = (G, dx, dy) => {
+    const fx = dx * G.inv, fy = dy * G.inv;
+    const gx0 = Math.floor(fx), gy0 = Math.floor(fy);
+    const tx = fx - gx0, ty = fy - gy0;
+    const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+    const a = G.g[gy0 * G.gw + gx0], b = G.g[gy0 * G.gw + gx0 + 1];
+    const c = G.g[(gy0 + 1) * G.gw + gx0], d = G.g[(gy0 + 1) * G.gw + gx0 + 1];
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+  };
+
+  const edgeR = Math.max(2, Math.round(1.5 * ppm));
+  for (let y = y0; y <= y1; y++) {
+    const row = y * W;
+    const dy = y - y0;
+    for (let x = x0; x <= x1; x++) {
+      const i = row + x;
+      if (clipMask && !clipMask[i]) continue;
+      const dx = x - x0;
+      const cov = alphaField ? alphaField[dy * bw + dx] : m[i];
+      if (cov <= 0.01) continue;
+
+      const n1 = sampleG(g1, dx, dy);
+      const n2 = sampleG(g2, dx, dy);
+      const cloud = n1 * 0.65 + n2 * 0.35;
+
+      let nearEdge = 0;
+      if (backrunAmt > 0 && !alphaField) {
+        const xm = x - edgeR, xp = x + edgeR, ym = y - edgeR, yp = y + edgeR;
+        if (xm < 0 || xp >= W || ym < 0 || yp >= H || !m[row + xm] || !m[row + xp] || !m[ym * W + x] || !m[yp * W + x]) {
+          nearEdge = 1;
+        }
+      } else if (backrunAmt > 0 && alphaField) {
+        if (cov > 0.15 && cov < 0.60) nearEdge = 0.65 * Math.sin(((cov - 0.15) / 0.45) * Math.PI);
+      }
+
+      const pmix = clamp(0.5 + n1 * 0.55, 0, 1);
+      const pr = col[0] + (col2[0] - col[0]) * pmix;
+      const pg = col[1] + (col2[1] - col[1]) * pmix;
+      const pb = col[2] + (col2[2] - col[2]) * pmix;
+
+      const t = tooth[i];
+      const gran = 1 + granulation * (0.5 - t);
+      const density = clamp(cov * strength * gran * (1 + cloud * cloudAmt) * (1 + nearEdge * backrunAmt * 0.65), 0, 1.35);
+
+      const j = 3 * i;
+      rgb[j] *= Math.pow(clamp(pr / 255, 0.04, 1), density);
+      rgb[j + 1] *= Math.pow(clamp(pg / 255, 0.04, 1), density);
+      rgb[j + 2] *= Math.pow(clamp(pb / 255, 0.04, 1), density);
+    }
+  }
+  return m;
+}
+
+// 6. Multi-layer paper-cut bas-relief compositor (If You Lived Here): directional studio shadow + lit bevel + cardstock grain
+function cutPaperLayer(P, polys, hexColor, o = {}) {
+  const { hexToRgb, rng, clamp } = require('../engine/kit/util');
+  const { W, H, ppm, rgb, tooth } = P.S;
+  const col = hexToRgb(hexColor);
+  const m = resolveMask(P.S, polys, o);
+  const bb = MK.bboxOf(P.S, m);
+  if (!bb) return m;
+
+  const elevation = o.elevation ?? 1.4;
+  const dxPx = Math.round(elevation * 0.85 * ppm);
+  const dyPx = Math.round(elevation * 1.05 * ppm);
+  const blurR = Math.max(1, Math.round(elevation * 0.62 * ppm));
+  const shadowDark = o.shadowDark ?? 0.34;
+  const rimLight = o.rimLight ?? 0.26;
+  const rimShade = o.rimShade ?? 0.22;
+  const invertShadow = !!o.invertShadow;
+
+  if (shadowDark > 0 && elevation > 0) {
+    const padPx = Math.max(Math.abs(dxPx), Math.abs(dyPx)) + blurR * 2 + 4;
+    const x0 = Math.max(0, bb.x0 - padPx), y0 = Math.max(0, bb.y0 - padPx);
+    const x1 = Math.min(W - 1, bb.x1 + padPx), y1 = Math.min(H - 1, bb.y1 + padPx);
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+
+    const shSrc = new Float32Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      const sy = y + y0 - dyPx;
+      if (sy < 0 || sy >= H) continue;
+      const sRow = sy * W, dRow = y * bw;
+      for (let x = 0; x < bw; x++) {
+        const sx = x + x0 - dxPx;
+        if (sx < 0 || sx >= W) continue;
+        shSrc[dRow + x] = m[sRow + sx];
+      }
+    }
+    const shBlur = boxBlurFloat(boxBlurFloat(shSrc, bw, bh, blurR), bw, bh, Math.max(1, Math.round(blurR * 0.7)));
+
+    for (let y = 0; y < bh; y++) {
+      const py = y + y0;
+      const wRow = py * W, bRow = y * bw;
+      for (let x = 0; x < bw; x++) {
+        const px = x + x0;
+        const wi = wRow + px;
+        if (m[wi]) continue;
+        const sa = shBlur[bRow + x] * shadowDark;
+        if (sa <= 0.004) continue;
+        const j = 3 * wi;
+        rgb[j] *= 1 - sa * 1.05;
+        rgb[j + 1] *= 1 - sa * 1.02;
+        rgb[j + 2] *= 1 - sa * 0.90;
+      }
+    }
+  }
+
+  const R = rng(`${P.S.seed}:papercut:${hexColor}:${bb.x0}:${bb.y0}`);
+  const bevelPx = Math.max(1, Math.round(0.28 * ppm));
+  for (let y = bb.y0; y <= bb.y1; y++) {
+    const row = y * W;
+    for (let x = bb.x0; x <= bb.x1; x++) {
+      const i = row + x;
+      if (!m[i]) continue;
+      const t = tooth[i];
+      const lightGrad = (((W - x) / W) * 0.5 + ((H - y) / H) * 0.5 - 0.5) * 14;
+      const cardGrain = (t - 0.5) * 16 + (R() - 0.5) * 4;
+      let cr = col[0] + lightGrad + cardGrain;
+      let cg = col[1] + lightGrad + cardGrain * 0.96;
+      let cb = col[2] + lightGrad + cardGrain * 0.92;
+
+      if (!invertShadow && (rimLight > 0 || rimShade > 0)) {
+        const ulX = x - bevelPx, ulY = y - bevelPx;
+        const brX = x + bevelPx, brY = y + bevelPx;
+        const isLitEdge = ulX >= 0 && ulY >= 0 && (!m[ulY * W + x] || !m[row + ulX]);
+        const isDarkEdge = brX < W && brY < H && (!m[brY * W + x] || !m[row + brX]);
+        if (isLitEdge && rimLight > 0) {
+          cr += (255 - cr) * rimLight;
+          cg += (252 - cg) * rimLight;
+          cb += (244 - cb) * rimLight;
+        } else if (isDarkEdge && rimShade > 0) {
+          cr *= 1 - rimShade;
+          cg *= 1 - rimShade;
+          cb *= 1 - rimShade * 0.92;
+        }
+      }
+      const j = 3 * i;
+      rgb[j] = clamp(cr, 0, 255);
+      rgb[j + 1] = clamp(cg, 0, 255);
+      rgb[j + 2] = clamp(cb, 0, 255);
+    }
+  }
+  return m;
+}
+
 // Fill ocean background inside frame in ~5ms while preserving full paper fibre texture!
-function drawOcean(P, { pad = 5, color } = {}) {
+function drawOcean(P, { pad = 5, color, rect: customRect } = {}) {
   const st = styleOf(P);
   const pal = palOf(P);
   const oceanColor = color || pal.ocean;
   const mode = st?.ocean?.mode || 'wash';
-  const rect = [[pad, pad], [P.w - pad, pad], [P.w - pad, P.h - pad], [pad, P.h - pad]];
+  const rect = customRect || [[pad, pad], [P.w - pad, pad], [P.w - pad, P.h - pad], [pad, P.h - pad]];
+
+  if (mode === 'collage') {
+    fillCollage(P, [rect], oceanColor, {
+      pattern: st.ocean.pattern || 'dots',
+      patternColor: st.ocean.patternColor || pal.oceanDeep,
+      pitch: st.ocean.pitch ?? 2.6,
+      strength: st.ocean.strength ?? 0.92,
+    });
+    return;
+  }
+
+  if (mode === 'gouache') {
+    const fullRect = customRect || [[0, 0], [P.w, 0], [P.w, P.h], [0, P.h]];
+    fillDryGouache(P, [fullRect], oceanColor, {
+      bottomColor: st.ocean.bottomColor || pal.oceanDeep,
+      altColor: st.ocean.altColor || pal.oceanShallow,
+      angle: st.ocean.angle ?? -5,
+      opacity: st.ocean.opacity ?? 0.98,
+      streakAmt: st.ocean.streakAmt ?? 0.32,
+      dryEdgeMm: 0,
+    });
+    if (st.ocean.waves !== false) {
+      const { rng } = require('../engine/kit/util');
+      const Rw = rng(`${P.S.seed}:gouache:waves`);
+      const count = Math.max(8, Math.round((P.w * P.h) / 2600));
+      for (let k = 0; k < count; k++) {
+        const wx = 6 + Rw() * (P.w - 30);
+        const wy = 10 + Rw() * (P.h - 20);
+        const wlen = 14 + Rw() * 24;
+        const pts = [];
+        for (let i = 0; i <= 8; i++) {
+          const t = i / 8;
+          pts.push([wx + t * wlen, wy + Math.sin(t * Math.PI * 2.5) * 1.3]);
+        }
+        dryBrushStroke(P, pts, k % 3 === 0 ? pal.waterline : pal.waterlineOuter, {
+          width: 1.6 + Rw() * 1.4,
+          opacity: 0.58,
+          dryness: 0.52,
+        });
+      }
+    }
+    return;
+  }
+
+  if (mode === 'soft-grain') {
+    fillSoftGrain(P, [rect], oceanColor, {
+      shadeColor: st.ocean.shadeColor || pal.oceanShallow,
+      grainAmt: st.ocean.grainAmt ?? 0.20,
+    });
+    return;
+  }
+
+  if (mode === 'watercolor' || mode === 'anno') {
+    fillWatercolorMultiply(P, [rect], oceanColor, {
+      color2: st.ocean.color2 || pal.oceanShallow,
+      strength: st.ocean.strength ?? (mode === 'anno' ? 0.36 : 0.68),
+      granulation: st.ocean.granulation ?? (mode === 'anno' ? 0.25 : 0.55),
+      backrunAmt: st.ocean.backrunAmt ?? (mode === 'anno' ? 0.14 : 0.40),
+      cloudAmt: st.ocean.cloudAmt ?? (mode === 'anno' ? 0.18 : 0.38),
+    });
+    return;
+  }
+
+  if (mode === 'paper-cut') {
+    const fullRect = customRect || [[0, 0], [P.w, 0], [P.w, P.h], [0, P.h]];
+    cutPaperLayer(P, [fullRect], oceanColor, { elevation: 0, shadowDark: 0, rimLight: 0, rimShade: 0 });
+    return;
+  }
 
   if (mode === 'ink-wash') {
     washBloom(P, [rect], oceanColor, {
@@ -783,9 +1441,29 @@ function drawCoastWaterlines(P, polys, o = {}) {
   const st = styleOf(P);
   const pal = palOf(P);
   const mode = o.mode || st?.waterlines?.mode || 'concentric';
+  if (mode === 'none') return;
+
   const m = MK.maskOf(P.S, polys);
   const r1 = MK.dilate(P.S, m, o.r1 ?? st?.waterlines?.r1 ?? 1.4);
   const r2 = MK.dilate(P.S, m, o.r2 ?? st?.waterlines?.r2 ?? 2.8);
+
+  if (mode === 'paper-shelf') {
+    cutPaperLayer(P, [], pal.oceanDeep || '#3f789c', { mask: r2, elevation: 1.25, shadowDark: 0.30, rimLight: 0.22 });
+    cutPaperLayer(P, [], o.shallowColor || pal.oceanShallow || '#6da5bf', { mask: r1, elevation: 1.35, shadowDark: 0.30, rimLight: 0.25 });
+    return;
+  }
+
+  if (mode === 'gouache-halo') {
+    fillDryGouache(P, [], o.shallowColor || pal.oceanShallow, { mask: r1, altColor: pal.waterline, opacity: 0.72, dryEdgeMm: 2.0 });
+    return;
+  }
+
+  if (mode === 'anno-ripple') {
+    MK.outline(P.S, P.pen(0.14, pal.waterline), r1, { tremor: 0.45 });
+    MK.outline(P.S, P.pen(0.10, pal.waterlineOuter), r2, { dash: 4.5, gap: 3.0, tremor: 0.40 });
+    return;
+  }
+
   const collar = new Uint8Array(r1.length);
   for (let i = 0; i < r1.length; i++) collar[i] = r1[i] && !m[i] ? 1 : 0;
 
@@ -958,9 +1636,41 @@ function drawZebraBorder(P, o = {}) {
   const pal = palOf(P);
   const borderStyle = o.style || st?.border || 'zebra';
 
+  if (borderStyle === 'none') return;
   if (borderStyle === 'blueprint') return drawBlueprintBorder(P, o, pal, pad, inner);
   if (borderStyle === 'celestial') return drawCelestialBorder(P, o, pal, pad, inner);
   if (borderStyle === 'scroll') return drawScrollBorder(P, o, pal, pad, inner);
+
+  if (borderStyle === 'shadow-box') {
+    const matW = Math.max(inner, 8.5);
+    const matOuter = [[0, 0], [w, 0], [w, h], [0, h]];
+    const matHole = [[matW, matW], [w - matW, matW], [w - matW, h - matW], [matW, h - matW]];
+    const matMask = MK.maskOf(P.S, [matOuter]);
+    MK.subtract(P.S, matMask, [matHole]);
+    cutPaperLayer(P, [], pal.paper || '#f4ecdc', { mask: matMask, elevation: 2.6, shadowDark: 0.42, invertShadow: true });
+    drawTickLabels(P, o.ticks, matW, pal.tickLabel);
+    return;
+  }
+
+  if (borderStyle === 'scrapbook' || borderStyle === 'editorial' || borderStyle === 'hairline') {
+    const m = borderStyle === 'hairline' ? Math.max(pad, 6.5) : Math.max(pad, 5.5);
+    P.paper([
+      [[0, 0], [w, 0], [w, m], [0, m]],
+      [[0, h - m], [w, h - m], [w, h], [0, h]],
+      [[0, 0], [m, 0], [m, h], [0, h]],
+      [[w - m, 0], [w, 0], [w, h], [w - m, h]],
+    ]);
+    if (borderStyle === 'hairline') {
+      P.ink([[m, m], [w - m, m], [w - m, h - m], [m, h - m], [m, m]], { nib: 0.22, color: pal.ink });
+      P.ink([[m - 1.2, m - 1.2], [w - m + 1.2, m - 1.2], [w - m + 1.2, h - m + 1.2], [m - 1.2, h - m + 1.2], [m - 1.2, m - 1.2]], { nib: 0.11, color: pal.borderAccent || pal.ink });
+    } else if (borderStyle === 'scrapbook') {
+      P.ink([[m, m], [w - m, m], [w - m, h - m], [m, h - m], [m, m]], { nib: 0.36, color: pal.ink });
+    } else {
+      P.ink([[m, m], [w - m, m], [w - m, h - m], [m, h - m], [m, m]], { nib: 0.16, color: pal.divider || pal.ink });
+    }
+    drawTickLabels(P, o.ticks, m, pal.tickLabel);
+    return;
+  }
 
   // Clean paper margin around all 4 edges
   P.paper([
@@ -1010,11 +1720,71 @@ function drawZebraBorder(P, o = {}) {
   drawTickLabels(P, o.ticks, inner, pal.tickLabel || '#456473');
 }
 
-// Overlapping jagged mountain range chain (style-aware: classic / ink-wash / blueprint / nocturne)
+// Overlapping jagged mountain range chain (style-aware)
 function drawMountainRange(P, peaks, o = {}) {
   const st = styleOf(P);
   const pal = palOf(P);
   const mode = o.style || st?.mountains || 'classic';
+
+  if (mode === 'paper-cut') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      const body = [[cx - w * 1.1, by], [cx, by - h * 1.1], [cx + w * 1.1, by]];
+      cutPaperLayer(P, [body], o.color || pal.mountain, { elevation: 1.6, shadowDark: 0.34, rimLight: 0.28 });
+      if (snow) {
+        const cap = [[cx - w * 0.40, by - h * 0.68], [cx, by - h * 1.1], [cx + w * 0.40, by - h * 0.68], [cx + w * 0.12, by - h * 0.58], [cx - w * 0.14, by - h * 0.64]];
+        cutPaperLayer(P, [cap], pal.snow, { elevation: 0.8, shadowDark: 0.22, rimLight: 0.26 });
+      }
+    }
+    return;
+  }
+
+  if (mode === 'gouache') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      fillDryGouache(P, [[[cx - w, by], [cx, by - h], [cx, by]]], o.color || pal.mountain, { opacity: 0.96, dryEdgeMm: 0.7 });
+      fillDryGouache(P, [[[cx, by - h], [cx + w, by], [cx, by]]], pal.mountainLight, { opacity: 0.96, dryEdgeMm: 0.7 });
+      if (snow) {
+        fillDryGouache(P, [[[cx - w * 0.36, by - h * 0.62], [cx, by - h], [cx + w * 0.38, by - h * 0.60], [cx, by - h * 0.48]]], pal.snow, { opacity: 0.98, dryEdgeMm: 0.5 });
+      }
+    }
+    return;
+  }
+
+  if (mode === 'geometric') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      fillSoftGrain(P, [[[cx - w, by], [cx, by - h], [cx, by]]], o.color || pal.mountain, { grainAmt: 0.18 });
+      fillSoftGrain(P, [[[cx, by - h], [cx + w, by], [cx, by]]], pal.mountainLight, { grainAmt: 0.18 });
+      if (snow) {
+        fillSoftGrain(P, [[[cx - w * 0.36, by - h * 0.62], [cx, by - h], [cx + w * 0.36, by - h * 0.62]]], pal.snow, { grainAmt: 0.06 });
+      }
+    }
+    return;
+  }
+
+  if (mode === 'collage') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      const tri = [[cx - w, by], [cx, by - h], [cx + w, by]];
+      fillCollage(P, [tri], o.color || pal.mountain, { pattern: 'stripes', patternColor: pal.ink, angle: 55, cutShadow: true });
+      if (snow) {
+        fillCollage(P, [[[cx - w * 0.36, by - h * 0.64], [cx, by - h], [cx + w * 0.36, by - h * 0.64], [cx, by - h * 0.56]]], pal.snow, { pattern: 'solid' });
+      }
+      P.outline([tri], { nib: 0.18, color: pal.ink });
+    }
+    return;
+  }
+
+  if (mode === 'anno' || mode === 'watercolor') {
+    for (const [cx, by, w, h, snow] of peaks) {
+      const mtn = D.curve([[cx - w, by], [cx - w * 0.35, by - h * 0.6], [cx, by - h], [cx + w * 0.4, by - h * 0.55], [cx + w, by]], true, 0.25);
+      P.paper([mtn]);
+      fillWatercolorMultiply(P, [mtn], o.color || pal.mountainLight, { color2: pal.mountain, strength: mode === 'anno' ? 0.44 : 0.62, backrunAmt: 0.22 });
+      P.hatch([mtn], { clip: [[[cx, by - h - 1], [cx + w + 1, by - h - 1], [cx + w + 1, by + 1], [cx, by + 1]]], angle: 55, pitch: 0.48, nib: 0.11, color: pal.shadow || pal.ink });
+      P.ink([[cx - w, by], [cx - w * 0.35, by - h * 0.6], [cx, by - h], [cx + w * 0.4, by - h * 0.55], [cx + w, by]], { nib: 0.16, color: pal.ink });
+      if (snow) {
+        fillWatercolorMultiply(P, [[[cx - w * 0.28, by - h * 0.68], [cx, by - h], [cx + w * 0.28, by - h * 0.66]]], pal.snow, { strength: 0.35 });
+      }
+    }
+    return;
+  }
 
   if (mode === 'ink-wash') {
     for (const [cx, by, w, h, snow] of peaks) {
@@ -1118,10 +1888,40 @@ function drawWaves(P, x, y, s = 1, count = 2) {
   }
 }
 
-// Winding river
+function polylineRibbon(pts, halfW) {
+  if (!pts || pts.length < 2) return null;
+  const left = [];
+  const right = [];
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(pts.length - 1, i + 1)];
+    const dx = next[0] - prev[0];
+    const dy = next[1] - prev[1];
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = (-dy / len) * halfW;
+    const ny = (dx / len) * halfW;
+    left.push([pts[i][0] + nx, pts[i][1] + ny]);
+    right.push([pts[i][0] - nx, pts[i][1] - ny]);
+  }
+  return left.concat(right.reverse());
+}
+
+// Winding river (style-aware: ink / dry-brush gouache / cut-paper ribbon)
 function drawRiver(P, ctrlPts, o = {}) {
+  const st = styleOf(P);
   const pal = palOf(P);
-  P.curve(ctrlPts, { nib: o.nib ?? 0.42, color: o.color || pal.river });
+  const col = o.color || pal.river;
+  const curvePts = D.curve(ctrlPts, false, 0.35);
+  if (st?.fill?.mode === 'gouache') {
+    dryBrushStroke(P, curvePts, col, { width: (o.nib ?? 0.42) * 3.2, opacity: 0.90, dryness: 0.24 });
+    return;
+  }
+  if (st?.fill?.mode === 'paper-cut') {
+    const ribbon = polylineRibbon(curvePts, Math.max(0.45, (o.nib ?? 0.42) * 1.4));
+    if (ribbon) cutPaperLayer(P, [ribbon], col, { elevation: 0.55, shadowDark: 0.22, rimLight: 0.18 });
+    return;
+  }
+  P.ink(curvePts, { nib: o.nib ?? 0.42, color: col, tremor: o.tremor });
 }
 
 // Dashed railway / maritime route
@@ -1358,6 +2158,27 @@ function drawCartouche(P, x, y, w, h, info = {}) {
     if (w >= 48 && h >= 28) {
       drawSealStamp(P, x + w - 7.5, y + h - 7.5, 6.4, pal);
     }
+  } else if (mode === 'stamp') {
+    const badge = D.rrect(x, y, x + w, y + h, 1.2);
+    fillCollage(P, [badge], pal.cream, { pattern: 'linen', patternColor: pal.divider, cutShadow: true });
+    P.outline([badge], { nib: 0.28, color: pal.ink });
+    fillCollage(P, [[[x + 1.5, y + 1.5], [x + w - 1.5, y + 1.5], [x + w - 1.5, y + 4.8], [x + 1.5, y + 4.8]]], pal.borderAccent || pal.crimson, { pattern: 'stripes', patternColor: pal.crimson });
+  } else if (mode === 'banner') {
+    const banner = D.curve([[x, y + 1], [x + w, y], [x + w + 1, y + h], [x - 1, y + h + 1]], true, 0.25);
+    fillDryGouache(P, [banner], pal.cream, { altColor: pal.paper, opacity: 0.96, dryEdgeMm: 1.0 });
+    fillDryGouache(P, [[[x + 2, y + 1.5], [x + w - 2, y + 1], [x + w - 1.8, y + 5.2], [x + 1.8, y + 5.6]]], pal.borderAccent || pal.crimson, { opacity: 0.95, dryEdgeMm: 0.5 });
+  } else if (mode === 'infographic') {
+    const card = D.rrect(x, y, x + w, y + h, 1.8);
+    fillSoftGrain(P, [card], pal.cream, { shadeColor: pal.divider, grainAmt: 0.16 });
+    fillSoftGrain(P, [[[x, y], [x + w, y], [x + w, y + 5.0], [x, y + 5.0]]], pal.ink, { grainAmt: 0.12 });
+  } else if (mode === 'minimal' || mode === 'quiet') {
+    const box = D.rrect(x, y, x + w, y + h, 1.0);
+    P.paper([box]);
+    fillWatercolorMultiply(P, [box], pal.cream, { strength: 0.30, backrunAmt: 0.12 });
+    P.outline([box], { nib: mode === 'quiet' ? 0.14 : 0.18, color: pal.divider || pal.ink });
+  } else if (mode === 'plaque') {
+    const box = D.rrect(x, y, x + w, y + h, 1.5);
+    cutPaperLayer(P, [box], pal.cream, { elevation: 1.8, shadowDark: 0.36, rimLight: 0.30 });
   } else {
     // Subtle drop shadow hatch
     P.hatch([D.rrect(x + 1.4, y + 1.4, x + w + 1.4, y + h + 1.4, 1.5)], { angle: 45, pitch: 0.65, nib: 0.1, color: pal.shadow || '#5c5349' });
@@ -1472,6 +2293,148 @@ function drawCartouche(P, x, y, w, h, info = {}) {
   P.text(`${3 * unit} km`, sx0 + 3 * seg, sy - 0.8, { face: 'sans-bold', size: 1.85, align: 'center', color: pal.ink });
 }
 
+// Structured Editorial Infographic Sidebar (The 50 States layout mode)
+function drawInfographicSidebar(P, box, info = {}) {
+  const { hexToRgb } = require('../engine/kit/util');
+  const pal = palOf(P);
+  const st = styleOf(P);
+  const { x, y, w, h } = box;
+  const regPal = st?.regionPalette || [pal.crimson, pal.navy, pal.ochre, pal.forest, pal.terracotta, pal.slate];
+
+  // Clean paper/grain backdrop behind sidebar
+  fillSoftGrain(P, [[[x - 3, 0], [P.w, 0], [P.w, P.h], [x - 3, P.h]]], pal.paper || '#f6efe0', {
+    shadeColor: pal.divider || '#e5dac3',
+    grainAmt: 0.14,
+  });
+
+  // Top editorial banner header across sidebar
+  let curY = y;
+  if (info.title) {
+    const bannerH = info.subtitle ? 18 : 13;
+    fillSoftGrain(P, [D.rrect(x, curY, x + w, curY + bannerH, 1.5)], pal.ink, { grainAmt: 0.14 });
+    const { text: fittedTitle, size: titleSz } = fitTextToWidth(info.title, 'serif-bold', 5.8, w - 8, 2.2);
+    P.text(fittedTitle, x + w / 2, curY + (info.subtitle ? 8.2 : 8.5), {
+      face: 'serif-bold',
+      size: titleSz,
+      align: 'center',
+      color: pal.cream || '#fbf6eb',
+    });
+    if (info.subtitle) {
+      const { text: fittedSub, size: subSz } = fitTextToWidth(info.subtitle, 'sans-bold', 2.2, w - 8, 1.4);
+      P.text(fittedSub, x + w / 2, curY + 14.2, {
+        face: 'sans-bold',
+        size: subSz,
+        align: 'center',
+        color: pal.borderAccent || pal.gold,
+      });
+    }
+    curY += bannerH + 3.5;
+  }
+
+  // 2-column stat cards
+  const stats = Array.isArray(info.stats) ? info.stats : [];
+  if (stats.length) {
+    const gap = 2.5;
+    const tileW = (w - gap) / 2;
+    const tileH = 18;
+    stats.slice(0, 4).forEach((s, idx) => {
+      const colIdx = idx % 2;
+      const rowIdx = Math.floor(idx / 2);
+      const tx = x + colIdx * (tileW + gap);
+      const ty = curY + rowIdx * (tileH + gap);
+      const bg = s.color || regPal[idx % regPal.length];
+      fillSoftGrain(P, [D.rrect(tx, ty, tx + tileW, ty + tileH, 1.6)], bg, { grainAmt: 0.22 });
+      const bgRgb = hexToRgb(bg);
+      const bgLum = (0.299 * bgRgb[0] + 0.587 * bgRgb[1] + 0.114 * bgRgb[2]) / 255;
+      const fg = s.textColor || (bgLum > 0.62 ? pal.ink : '#ffffff');
+      const { text: fk, size: ks } = fitTextToWidth(String(s.label || s.k || ''), 'sans-bold', 1.9, tileW - 4, 1.3);
+      const { text: fv, size: vs } = fitTextToWidth(String(s.value || s.v || ''), 'serif-bold', 3.0, tileW - 4, 1.6);
+      P.text(fk, tx + tileW / 2, ty + 6.4, { face: 'sans-bold', size: ks, align: 'center', color: fg });
+      P.text(fv, tx + tileW / 2, ty + 13.2, { face: 'serif-bold', size: vs, align: 'center', color: fg });
+    });
+    const rows = Math.ceil(Math.min(4, stats.length) / 2);
+    curY += rows * (tileH + gap) + 2;
+  }
+
+  // Numbered Key Facts & Landmarks card
+  const items = Array.isArray(info.items) ? info.items : [];
+  const cardH = Math.max(24, y + h - curY);
+  fillSoftGrain(P, [D.rrect(x, curY, x + w, curY + cardH, 1.8)], pal.cream || '#fbf6eb', {
+    shadeColor: pal.divider || '#e8dec8',
+    grainAmt: 0.14,
+  });
+  fillSoftGrain(P, [[[x, curY], [x + w, curY], [x + w, curY + 8.5], [x, curY + 8.5]]], pal.ink, { grainAmt: 0.12 });
+  P.text(info.itemsTitle || 'KEY HIGHLIGHTS', x + w / 2, curY + 5.8, {
+    face: 'sans-bold',
+    size: 2.3,
+    align: 'center',
+    color: pal.borderAccent || pal.gold,
+  });
+
+  if (items.length) {
+    const availH = Math.max(12, cardH - 12);
+    const step = Math.min(15.5, availH / items.length);
+    items.forEach((it, idx) => {
+      const ry = curY + 12 + idx * step + step * 0.35;
+      if (ry > curY + cardH - 3) return;
+      const badgeCol = it.color || regPal[idx % regPal.length];
+      const bRgb = hexToRgb(badgeCol);
+      const bLum = (0.299 * bRgb[0] + 0.587 * bRgb[1] + 0.114 * bRgb[2]) / 255;
+      fillSoftGrain(P, [D.ell(x + 6.5, ry, 3.2, 3.2)], badgeCol, { grainAmt: 0.16 });
+      P.text(String(it.num ?? idx + 1), x + 6.5, ry + 0.9, { face: 'sans-bold', size: 2.3, align: 'center', color: bLum > 0.62 ? pal.ink : '#ffffff' });
+      const titleTxt = typeof it === 'string' ? it : (it.title || it.name || '');
+      const subTxt = typeof it === 'string' ? '' : (it.sub || it.subtitle || '');
+      const { text: ft, size: ts } = fitTextToWidth(titleTxt, 'sans-bold', 2.4, w - 15, 1.5);
+      P.text(ft, x + 12.2, subTxt ? ry - 0.5 : ry + 0.7, { face: 'sans-bold', size: ts, align: 'left', color: pal.ink });
+      if (subTxt) {
+        const { text: fs, size: ss } = fitTextToWidth(subTxt, 'sans', 1.95, w - 15, 1.3);
+        P.text(fs, x + 12.2, ry + 3.1, { face: 'sans', size: ss, align: 'left', color: pal.tickLabel || pal.callout });
+      }
+      if (idx < items.length - 1) {
+        P.ink([[x + 4, ry + step * 0.52], [x + w - 4, ry + step * 0.52]], { nib: 0.09, color: pal.divider || '#d8ceb8', tremor: 0.05 });
+      }
+    });
+  }
+}
+
+// Bare-Paper Flat-Lay Field-Guide Specimen Sidebar (Everything & Everywhere layout mode)
+function drawSpecimenSidebar(P, box, info = {}, drawSpecimenFn) {
+  const pal = palOf(P);
+  const { x, y, w, h } = box;
+  // Clean bare watercolor paper strip on right side
+  P.paper([[[x - 3, 0], [P.w, 0], [P.w, P.h], [x - 3, P.h]]]);
+  const cx = x + w / 2;
+  P.text(info.title || 'FIELD SPECIMENS', cx, y + 7, {
+    face: 'sans-bold',
+    size: 2.7,
+    align: 'center',
+    color: pal.regionLabel || pal.ink,
+    spacing: 0.12,
+  });
+  P.ink([[x + 4, y + 10.5], [x + w - 4, y + 10.5]], { nib: 0.14, color: pal.divider || pal.ink, tremor: 0.55 });
+
+  const items = Array.isArray(info.specimens) ? info.specimens : (Array.isArray(info.items) ? info.items : []);
+  if (!items.length) return;
+  const top = y + 16;
+  const slotH = (h - 18) / items.length;
+  items.forEach((sp, idx) => {
+    const sy = top + idx * slotH + slotH * 0.54;
+    if (typeof drawSpecimenFn === 'function') {
+      drawSpecimenFn(sp, cx, sy, slotH, idx);
+    }
+    const label = typeof sp === 'string' ? sp : (sp.label || sp.title || sp.type || '');
+    if (label) {
+      const { text: fl, size: ls } = fitTextToWidth(label, 'serif', 2.35, w - 6, 1.4);
+      P.text(fl, cx, top + (idx + 1) * slotH - 3.0, {
+        face: 'serif',
+        size: ls,
+        align: 'center',
+        color: pal.callout || pal.ink,
+      });
+    }
+  });
+}
+
 // Framed Inset Map Box (e.g., Ryukyu / Okinawa Islands)
 function drawInsetBox(P, x, y, w, h, title) {
   const pal = palOf(P);
@@ -1499,6 +2462,14 @@ module.exports = {
   part,
   wash,
   washBloom,
+  organicBlob,
+  fillCollage,
+  fillDryGouache,
+  dryBrushStroke,
+  fillSoftGrain,
+  fillWatercolorMultiply,
+  cutPaperLayer,
+  polylineRibbon,
   createProjection,
   fitProjection,
   geoRings,
@@ -1521,5 +2492,7 @@ module.exports = {
   drawCity,
   drawCompass,
   drawCartouche,
+  drawInfographicSidebar,
+  drawSpecimenSidebar,
   drawInsetBox,
 };

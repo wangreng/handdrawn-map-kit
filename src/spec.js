@@ -35,7 +35,16 @@ const KNOWN_TOP_KEYS = new Set([
   'cartouche',
   'compass',
   'insets',
+  'sidebar',
   'layout',
+]);
+
+const LAYOUT_MODES = new Set([
+  'classic',
+  'full-bleed',
+  'sidebar-infographic',
+  'sidebar-specimens',
+  'shadow-box',
 ]);
 
 const ALIAS_MAP = {
@@ -231,7 +240,12 @@ function validateSpec(inputSpec, opts = {}) {
 
   // canvas
   const rawCanvas = isPlainObject(spec.canvas) ? spec.canvas : {};
-  const border = opts.border !== undefined ? opts.border : (rawCanvas.border !== false);
+  const requestedLayoutMode = isPlainObject(spec.layout) ? spec.layout.mode : undefined;
+  const effectiveLayoutMode = requestedLayoutMode || (resolvedStyleObj && resolvedStyleObj.layoutMode) || 'classic';
+  const defaultBorder = effectiveLayoutMode === 'full-bleed' ? false : true;
+  const border = opts.border !== undefined
+    ? opts.border
+    : (rawCanvas.border !== undefined ? rawCanvas.border !== false : defaultBorder);
   const w = rawCanvas.w ?? 300;
   const h = rawCanvas.h ?? 200;
   const ppm = opts.ppm !== undefined ? opts.ppm : (rawCanvas.ppm ?? 10);
@@ -565,11 +579,26 @@ function validateSpec(inputSpec, opts = {}) {
     spec.insets = [];
   }
 
+  // sidebar (optional config for sidebar-infographic / sidebar-specimens layout modes)
+  if (spec.sidebar !== undefined && !isPlainObject(spec.sidebar)) {
+    errors.push('sidebar must be an object.');
+  }
+
   // layout
   spec.layout = isPlainObject(spec.layout) ? spec.layout : {};
   if (opts.autoLayout) {
     spec.layout.autoPlace = true;
     spec.layout.avoidOverlap = true;
+  }
+  if (spec.layout.mode !== undefined) {
+    if (typeof spec.layout.mode !== 'string' || !LAYOUT_MODES.has(spec.layout.mode)) {
+      errors.push(`Unknown layout.mode "${spec.layout.mode}" (supported: ${[...LAYOUT_MODES].join(', ')}).`);
+    }
+  }
+  if (spec.geo && isPlainObject(spec.geo.admin1) && spec.geo.admin1.colorBy !== undefined) {
+    if (!['region', 'each'].includes(spec.geo.admin1.colorBy)) {
+      errors.push(`Invalid geo.admin1.colorBy "${spec.geo.admin1.colorBy}" (expected "region" or "each").`);
+    }
   }
   if (spec.layout.gridStep !== undefined && (!isFiniteNum(spec.layout.gridStep) || spec.layout.gridStep <= 0)) {
     errors.push('layout.gridStep must be a positive number.');
@@ -704,7 +733,25 @@ function bboxFromWrite(b) {
   return normalizeBBox(b.x0, b.y0, b.w, b.h);
 }
 
-function buildProjection(geo, canvas, baseDir) {
+function resolveLayoutMode(spec, activeStyle) {
+  return spec.layout?.mode || activeStyle?.layoutMode || 'classic';
+}
+
+function computeSidebarBox(spec, effectiveInner, layoutMode) {
+  if (layoutMode !== 'sidebar-infographic' && layoutMode !== 'sidebar-specimens') return null;
+  const sb = isPlainObject(spec.sidebar) ? spec.sidebar : {};
+  const { w, h } = spec.canvas;
+  const margin = Math.max(effectiveInner, 7.5);
+  const sw = isFiniteNum(sb.width) ? sb.width : Math.round(w * 0.255);
+  return {
+    x: w - margin - sw,
+    y: margin,
+    w: sw,
+    h: h - margin * 2,
+  };
+}
+
+function buildProjection(geo, canvas, baseDir, sidebarBox = null) {
   if (!geo) return null;
   const { w, h, inner } = canvas;
   const source = resolveGeoSource(geo.fit?.source ?? geo.source, baseDir);
@@ -715,11 +762,13 @@ function buildProjection(geo, canvas, baseDir) {
     const bbox = geo.fit.fullBBox ? resolved.bbox : resolved.mainBBox;
     if (bbox) {
       const m = inner + (geo.fit.margin ?? 6);
-      const frame = geo.fit.frame || [m, m, w - m, h - m];
+      const maxX = sidebarBox ? Math.max(m + 20, sidebarBox.x - 6) : w - m;
+      const frame = geo.fit.frame || [m, m, maxX, h - m];
       return M.fitProjection(bbox, {
         frame,
         rotDeg: geo.fit.rotDeg ?? 0,
         zoom: geo.fit.zoom ?? 1,
+        oblique: geo.fit.oblique,
       });
     }
   }
@@ -730,9 +779,10 @@ function buildProjection(geo, canvas, baseDir) {
       lon0: p.lon0,
       lat0: p.lat0,
       scale: p.scale,
-      cx: p.cx ?? w / 2,
+      cx: p.cx ?? (sidebarBox ? sidebarBox.x / 2 : w / 2),
       cy: p.cy ?? h / 2,
       rotDeg: p.rotDeg ?? 0,
+      oblique: p.oblique,
     });
   }
 
@@ -749,6 +799,7 @@ function normalizeAdmin1Opts(geo, pal, baseDir, hasCountryFocus) {
   const focus = raw.focus ?? raw.highlight ?? [];
   const focusArr = Array.isArray(focus) ? focus : (focus ? [focus] : []);
   const source = resolveGeoSource(raw.source, baseDir);
+  const colorBy = raw.colorBy || null;
 
   const opts = {
     country,
@@ -756,13 +807,15 @@ function normalizeAdmin1Opts(geo, pal, baseDir, hasCountryFocus) {
     neighbors: raw.neighbors,
     source,
     bbox: raw.bbox,
-    bordersOnly: raw.bordersOnly ?? (focusArr.length === 0 && !raw.fill),
+    colorBy,
+    regionColors: Array.isArray(raw.regionColors) ? raw.regionColors.map((c) => resolveColor(c, pal)) : undefined,
+    bordersOnly: raw.bordersOnly ?? (focusArr.length === 0 && !raw.fill && !colorBy),
     fill: typeof raw.fill === 'string' ? resolveColor(raw.fill, pal) : raw.fill,
     color: Array.isArray(raw.color)
       ? raw.color.map((c) => resolveColor(c, pal))
       : resolveColor(raw.color || geo.color || pal.land, pal),
     neighborColor: resolveColor(raw.neighborColor || geo.neighborColor || pal.neighborLand, pal),
-    borderColor: resolveColor(raw.borderColor || '#7d7365', pal),
+    borderColor: resolveColor(raw.borderColor || pal.admin1Border || '#7d7365', pal),
     outlineColor: raw.outlineColor ? resolveColor(raw.outlineColor, pal) : undefined,
     borderNib: raw.borderNib,
     neighborNib: raw.neighborNib,
@@ -960,7 +1013,7 @@ function buildLabelDrawOpts(lbl, defs, pal) {
   return lOpts;
 }
 
-function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride = null) {
+function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride = null, sidebarBox = null) {
   registerSpecFonts(spec, baseDir);
   const warnings = [];
   const effectiveInner = spec.canvas.border ? spec.canvas.inner : 0;
@@ -981,6 +1034,20 @@ function buildLayoutPlan(spec, proj, pal, baseDir, opts = {}, landRingsOverride 
     gridStep: spec.layout.gridStep ?? 2.0,
     padding: pad,
   });
+
+  if (sidebarBox) {
+    layout.register({
+      id: 'sidebar',
+      kind: 'sidebar',
+      x: sidebarBox.x - 3,
+      y: sidebarBox.y,
+      w: sidebarBox.w + 3,
+      h: sidebarBox.h,
+      priority: 98,
+      fixed: true,
+      layer: 'chrome',
+    });
+  }
 
   const landRings = landRingsOverride || collectGeoRingsPure(proj, spec.geo, spec.canvas, baseDir, pal);
   if (landRings.length) layout.setLandPolygons(landRings);
@@ -1565,9 +1632,11 @@ function planSpec(specOrPath, opts = {}) {
     : { ...M.PALETTE, ...(spec.style.palette || {}) };
   const baseDir = spec.__baseDir || null;
   const effectiveInner = spec.canvas.border ? spec.canvas.inner : 0;
-  const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);
+  const layoutMode = resolveLayoutMode(spec, activeStyle);
+  const sidebarBox = computeSidebarBox(spec, effectiveInner, layoutMode);
+  const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir, sidebarBox);
 
-  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts);
+  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts, null, sidebarBox);
   const warnings = [...validation.warnings, ...plan.warnings];
   const diagnostics = plan.layout.toDiagnostics({ ppm: spec.canvas.ppm, warnings });
 
@@ -1640,12 +1709,17 @@ function renderSpec(specOrPath, opts = {}) {
   }
 
   const spec = validation.spec;
+  const requestedLayoutMode = spec.layout?.mode;
   const hasStyle = Boolean(
-    spec.style.preset || spec.style.stroke || spec.style.fill || spec.style.border || spec.style.cartouche || spec.style.compass || spec.style.mountains || spec.style.waterlines,
+    spec.style.preset || spec.style.stroke || spec.style.fill || spec.style.border || spec.style.cartouche || spec.style.compass || spec.style.mountains || spec.style.waterlines || requestedLayoutMode === 'shadow-box',
   );
   const activeStyle = hasStyle
     ? STYLES.resolveStyle(opts.style ? { ...spec.style, palette: undefined, preset: spec.style.preset } : spec.style)
     : null;
+  const layoutMode = resolveLayoutMode(spec, activeStyle);
+  if (layoutMode === 'shadow-box' && activeStyle && !spec.style.border) {
+    activeStyle.border = 'shadow-box';
+  }
   const pal = activeStyle
     ? activeStyle.palette
     : { ...M.PALETTE, ...(spec.style.palette || {}) };
@@ -1656,6 +1730,7 @@ function renderSpec(specOrPath, opts = {}) {
   const effectiveBorder = spec.canvas.border !== false;
   const effectivePad = effectiveBorder ? spec.canvas.pad : 0;
   const effectiveInner = effectiveBorder ? spec.canvas.inner : 0;
+  const sidebarBox = computeSidebarBox(spec, effectiveInner, layoutMode);
   const oceanOpt = spec.canvas.ocean === false
     ? false
     : (typeof spec.canvas.ocean === 'string' ? resolveColor(spec.canvas.ocean, pal) : pal.ocean);
@@ -1675,7 +1750,7 @@ function renderSpec(specOrPath, opts = {}) {
     style: activeStyle,
   });
 
-  const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir);
+  const proj = buildProjection(spec.geo, { ...spec.canvas, inner: effectiveInner }, baseDir, sidebarBox);
 
   // 2. Graticule
   if (spec.layers.graticule && proj) {
@@ -1739,7 +1814,7 @@ function renderSpec(specOrPath, opts = {}) {
   }
 
   // Build unified layout plan (including auto-placement & collision avoidance) using actual rendered land rings
-  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts, allLandRings);
+  const plan = buildLayoutPlan(spec, proj, pal, baseDir, opts, allLandRings, sidebarBox);
   const { layout, idPositions } = plan;
   const warnings = [...validation.warnings, ...plan.warnings];
   const geoContext = getGeoContext(spec);
@@ -1942,6 +2017,38 @@ function renderSpec(specOrPath, opts = {}) {
       mmPerKm: c.mmPerKm ?? (proj ? proj.mmPerKm : undefined),
     };
     map.cartouche(x, y, c.w, c.h, info);
+  }
+
+  if (sidebarBox && layoutMode === 'sidebar-infographic') {
+    const sb = isPlainObject(spec.sidebar) ? spec.sidebar : {};
+    const c = isPlainObject(spec.cartouche) ? spec.cartouche : {};
+    const defaultStats = [];
+    if (c.capital) defaultStats.push({ label: 'CAPITAL', value: c.capital });
+    if (c.population) defaultStats.push({ label: 'POPULATION', value: c.population });
+    if (c.language) defaultStats.push({ label: 'LANGUAGE', value: c.language });
+    if (c.area) defaultStats.push({ label: 'AREA', value: c.area });
+    const defaultItems = (normalizeCartoucheFacts(c.facts) || []).map((f, idx) => ({ num: idx + 1, title: String(f) }));
+    map.infographicSidebar(sidebarBox, {
+      title: sb.title ?? c.country ?? c.title ?? spec.meta.title,
+      subtitle: sb.subtitle ?? c.subtitle,
+      stats: sb.stats || defaultStats,
+      itemsTitle: sb.itemsTitle,
+      items: sb.items || defaultItems,
+    });
+  } else if (sidebarBox && layoutMode === 'sidebar-specimens') {
+    const sb = isPlainObject(spec.sidebar) ? spec.sidebar : {};
+    map.specimenSidebar(sidebarBox, {
+      title: sb.title || 'FIELD SPECIMENS',
+      specimens: sb.specimens || sb.items || [],
+    }, (sp, cx, sy, slotH) => {
+      if (!isPlainObject(sp)) return;
+      const scale = sp.scale ?? Math.min(0.85, Math.max(0.42, slotH / 34));
+      if (sp.svg) {
+        map.svg(normalizeSvgInput(sp.svg), cx, sy, { width: sp.width ?? Math.min(26, sidebarBox.w * 0.55), palette: pal });
+      } else if (typeof sp.type === 'string' && typeof map.el[sp.type] === 'function') {
+        drawElementItem(map, { type: sp.type, scale, options: sp.options, angle: sp.angle }, [cx, sy + slotH * 0.14], pal);
+      }
+    });
   }
 
   layout.rebuildGrid();

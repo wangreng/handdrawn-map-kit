@@ -27,6 +27,14 @@ function plate(o) {
         pens.set(k, S.tool('brush', { nib: effNib, color, dryness: strokeCfg.dryness }));
       } else if (tool === 'gel') {
         pens.set(k, S.tool('gel', { nib: effNib, color }));
+      } else if (tool === 'graphite') {
+        pens.set(k, S.tool('graphite', { grade: strokeCfg.grade || '2B' }));
+      } else if (tool === 'crayon') {
+        pens.set(k, S.tool('crayon', { color, kind: strokeCfg.kind || 'wax' }));
+      } else if (tool === 'pastelpencil') {
+        pens.set(k, S.tool('pastelpencil', { color, point: strokeCfg.point }));
+      } else if (tool === 'marker') {
+        pens.set(k, S.tool('marker', { color, tip: strokeCfg.tip || 'round', width: effNib }));
       } else {
         pens.set(k, S.tool(tool, { nib: effNib, color }));
       }

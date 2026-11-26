@@ -42,7 +42,7 @@ handdrawn-map inspect flags --json
 # List registered Latin & CJK fonts (including bundled ZCOOL XiaoWei)
 handdrawn-map inspect fonts --json
 
-# List built-in visual style presets (vintage-atlas, blueprint, nocturne, ink-wash)
+# List all 10 built-in visual style presets
 handdrawn-map inspect styles --json
 
 # Validate & plan a spec without rasterizing (fast projection + auto-layout diagnostics)
@@ -57,8 +57,9 @@ handdrawn-map render my-map.yaml -o out/my-map-fast.png --fast --auto-layout --d
 
 # Render the same spec in an alternate visual style preset
 handdrawn-map render my-map.yaml --style blueprint -o out/my-map-blueprint.png --fast
-handdrawn-map render my-map.yaml --style nocturne -o out/my-map-nocturne.png --fast
-handdrawn-map render my-map.yaml --style ink-wash -o out/my-map-inkwash.png --fast
+handdrawn-map render my-map.yaml --style paper-relief -o out/my-map-papercut.png --fast
+handdrawn-map render my-map.yaml --style watercolor-field -o out/my-map-watercolor.png --fast
+handdrawn-map render my-map.yaml --style gouache-stage -o out/my-map-gouache.png --fast
 
 # Write diagnostics JSON to a file
 handdrawn-map render my-map.yaml -o out/my-map-fast.png --fast --diagnostics out/my-map.diag.json
@@ -69,7 +70,7 @@ handdrawn-map render my-map.yaml -o out/my-map-hd.png --hd
 
 Supported flags for `render`:
 - `-o, --out <file>`: output PNG path (defaults to `out/<meta.id-or-stem>.png`).
-- `--style <preset>`: override visual style preset (`vintage-atlas` | `blueprint` | `nocturne` | `ink-wash`).
+- `--style <preset>`: override visual style preset (`vintage-atlas` | `blueprint` | `nocturne` | `ink-wash` | `collage-atlas` | `gouache-stage` | `editorial-infographic` | `watercolor-field` | `anno-scroll` | `paper-relief`).
 - `--fast`: `ppm = 5` (`1500 × 1000 px` on default sheet).
 - `--hd`: `ppm = 10` (`3000 × 2000 px` on default sheet).
 - `--ppm <n>`: explicit pixels-per-mm override.
@@ -99,7 +100,7 @@ canvas:
   border: true
 
 style:
-  preset: vintage-atlas   # vintage-atlas | blueprint | nocturne | ink-wash
+  preset: vintage-atlas   # vintage-atlas | blueprint | nocturne | ink-wash | collage-atlas | gouache-stage | editorial-infographic | watercolor-field | anno-scroll | paper-relief
   palette:
     land: '#efe2c3'
     neighborLand: '#e2dac6'
@@ -115,12 +116,15 @@ geo:
     target: { country: China, admin1: Sichuan }
     margin: 12
     rotDeg: 0
+    # oblique: true       # optional 45° parallel-perspective shear (Anno's Journey feel)
   focus: [China]
   neighbors: true         # true (auto), false, or explicit list
   admin1:
     country: China
     highlight: [Sichuan]  # optional highlight list; omit for borders-only overlay
+    # colorBy: region     # optional 'region' | 'each' multi-color zone fill (The 50 States / City Atlas)
   waterlines: true
+# Optional sidebar + layout.mode: classic | full-bleed | sidebar-infographic | sidebar-specimens | shadow-box
 
 layers:
   graticule: true

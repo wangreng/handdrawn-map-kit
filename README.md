@@ -16,7 +16,17 @@ Minimal runtime dependencies: `@napi-rs/canvas` (2D rasterization) and `js-yaml`
 - **65 Built-in Cultural, Landmark, Animal & Culinary Illustrations**: 43 classic East Asian & cartographic icons plus 22 new China, Europe, and world icons (`pavilion`, `greatWall`, `archBridge`, `lantern`, `panda`, `dumplings`, `teapot`, `cathedral`, `europeanCastle`, `windmill`, `romanArch`, `vineyard`, `oliveTree`, `cheeseWine`, `palmTree`, `volcano`, `waterfall`, `train`, `ship`, `hotAirBalloon`, `fish`, `yurt`), each reporting exact mm bounding boxes (`ELEMENT_BOUNDS`, `ELEMENT_META`, `elementBBox`), plus parameterized hand-drawn characters (`person`).
 - **CJK & Multilingual Hand-Drawn Typography**: Bundled `ZCOOL XiaoWei` (`engine/fonts/ZCOOLXiaoWei-Regular.ttf`, SIL OFL 1.1) + OS CJK font discovery + `registerFont()`, script-aware mixed Latin/Han/Kana/Hangul rendering, accurate `measureBox()`, **bilingual stacked/inline labels** (`writeBilingual`), **curved path labels** (`writeAlongPath`), rotated labels, and CJK-safe cartouches & inset boxes.
 - **Auto-Placement & Collision Avoidance (`src/layout.js`)**: Automatic empty-space placement (`placement: 'auto'`) preferring open sea with graceful landlocked fallback, priority-aware collision avoidance (`--auto-layout` / `layout.avoidOverlap`), callout routing, and structured mm bounding-box diagnostics.
-- **Multi-Style Rendering Presets (`src/styles.js`)**: Switch entire maps with one option (`style.preset` or `--style`): **`vintage-atlas`** (hotpress + fineliner + colored pencil + zebra border), **`blueprint`** (cyanotype navy + white/cyan gel + technical grid & crosshairs), **`nocturne`** (midnight obsidian + starfield ocean + gold gel + celestial frame), and **`ink-wash`** (xuan-paper + dynamic sumi `brush` with flying-white + mineral celadon `washBloom` + scroll frame & vermilion seal).
+- **10 Multi-Style Rendering Presets (`src/styles.js`) & Procedural Media Primitives (`src/mapPrimitives.js`)**: Switch entire maps — including all 65 palette-harmonized icons — with one option (`style.preset` or `--style`):
+  - **`vintage-atlas`** (*Maps*): hotpress paper, technical fineliner, colored pencil fill, zebra neatline border.
+  - **`blueprint`**: cyanotype navy paper, white/cyan gel ink, technical grid & crosshairs.
+  - **`nocturne`**: midnight obsidian paper, starfield ocean, antique gold gel ink, celestial frame.
+  - **`ink-wash`**: aged xuan-paper, dynamic sumi `brush` with flying-white, mineral celadon `washBloom`, scroll frame & vermilion seal.
+  - **`collage-atlas`** (*City Atlas*): procedural vintage collage patterns (`fillCollage`: halftone dots, stripes, linen, speckle) with cut-paper micro-seams & stamp cartouche.
+  - **`gouache-stage`** (*Atlas of Adventures*): borderless full-bleed stage, opaque dry-brush gouache (`fillDryGouache` / `dryBrushStroke`), high-saturation lineless color blocking.
+  - **`editorial-infographic`** (*The 50 States*): distressed risograph grain (`fillSoftGrain`), color-coded `admin1.colorBy: 'region'` zones, and `layout.mode: 'sidebar-infographic'` data cards.
+  - **`watercolor-field`** (*Everything & Everywhere*): granulated cotton paper, true Beer-Lambert wet-on-wet multiply watercolor (`fillWatercolorMultiply`), loose 2B `graphite` sketch lines & `layout.mode: 'sidebar-specimens'` flat-lay bar.
+  - **`anno-scroll`** (*Anno's Journey*): ultra-fine sepia crowquill pen, whisper-pale multiply watercolor tints, optional `oblique: true` 45° parallel-perspective projection & hairline scroll frame.
+  - **`paper-relief`** (*If You Lived Here*): Z-stacked matte cardstock (`cutPaperLayer`) with unified top-left studio lighting, Gaussian drop shadows, lit beveled rims & `shadow-box` museum mat frame.
 
 ## Quick Start
 
@@ -27,9 +37,10 @@ npm install
 npx handdrawn-map render examples/specs/sichuan.yaml -o out/sichuan.png --fast --auto-layout --diagnostics out/sichuan.diag.json
 npx handdrawn-map render examples/specs/italy.yaml -o out/italy.png --fast --auto-layout --diagnostics out/italy.diag.json
 
-# Switch visual style presets on any spec
+# Switch visual style presets on any spec (10 built-in presets)
 npx handdrawn-map render examples/specs/italy.yaml --style blueprint -o out/italy-blueprint.png --fast --auto-layout
-npx handdrawn-map render examples/specs/italy.yaml --style nocturne -o out/italy-nocturne.png --fast --auto-layout
+npx handdrawn-map render examples/specs/italy.yaml --style paper-relief -o out/italy-papercut.png --fast --auto-layout
+npx handdrawn-map render examples/specs/italy.yaml --style watercolor-field -o out/italy-watercolor.png --fast --auto-layout
 npx handdrawn-map render examples/specs/sichuan.yaml --style ink-wash -o out/sichuan-inkwash.png --fast --auto-layout
 
 # Inspect bundled Natural Earth geography, elements, flags, fonts, and styles
